@@ -1,54 +1,108 @@
-name: Claude Paper Trader
+name: Paper trader
+
+# One cycle per schedule tick. The bot decides for itself whether the market is
+# open, so a few ticks outside the session are harmless no-ops -- GitHub's cron
+# is best-effort and routinely fires several minutes late, which is exactly why
+# the window is padded rather than pinned to the bell.
+#
+# NSE runs 09:15-15:30 IST = 03:45-10:00 UTC.
+# NYSE runs 09:30-16:00 ET  = 13:30-20:00 UTC (14:30-21:00 in winter).
+# Only one of the two cron blocks should be active; MARKET decides which.
 
 on:
   schedule:
-    # Runs every 15 minutes during market hours (Mon-Fri, 9:30am-4pm ET = 13:30-20:00 UTC)
-    - cron: '30 13 * * 1-5'
-    - cron: '45 13 * * 1-5'
-    - cron: '0 14 * * 1-5'
-    - cron: '15 14 * * 1-5'
-    - cron: '30 14 * * 1-5'
-    - cron: '45 14 * * 1-5'
-    - cron: '0 15 * * 1-5'
-    - cron: '15 15 * * 1-5'
-    - cron: '30 15 * * 1-5'
-    - cron: '45 15 * * 1-5'
-    - cron: '0 16 * * 1-5'
-    - cron: '15 16 * * 1-5'
-    - cron: '30 16 * * 1-5'
-    - cron: '45 16 * * 1-5'
-    - cron: '0 17 * * 1-5'
-    - cron: '15 17 * * 1-5'
-    - cron: '30 17 * * 1-5'
-    - cron: '45 17 * * 1-5'
-    - cron: '0 18 * * 1-5'
-    - cron: '15 18 * * 1-5'
-    - cron: '30 18 * * 1-5'
-    - cron: '45 18 * * 1-5'
-    - cron: '0 19 * * 1-5'
-    - cron: '15 19 * * 1-5'
-    - cron: '30 19 * * 1-5'
-    - cron: '45 19 * * 1-5'
-  workflow_dispatch:  # allows manual trigger from GitHub UI
+    - cron: '*/15 3-10 * * 1-5'   # NSE session, padded either side
+    # - cron: '*/15 13-21 * * 1-5'  # uncomment for US, comment out the NSE line
+  workflow_dispatch:
+    inputs:
+      market:
+        description: 'Market to trade'
+        type: choice
+        options: [in, us]
+        default: 'in'
+      segment:
+        description: 'NSE cash segment'
+        type: choice
+        options: [intraday, delivery]
+        default: 'intraday'
+      dry_run:
+        description: 'Journal decisions, send no orders'
+        type: boolean
+        default: false
+
+concurrency:
+  # Two cycles writing the same journal would corrupt the account history.
+  group: paper-trader
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 jobs:
   trade:
     runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+    timeout-minutes: 12
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+    env:
+      MARKET: ${{ inputs.market || vars.MARKET || 'in' }}
+      TRADE_SEGMENT: ${{ inputs.segment || vars.TRADE_SEGMENT || 'intraday' }}
+      DRY_RUN: ${{ inputs.dry_run && '1' || vars.DRY_RUN || '0' }}
+      STRATEGY: ${{ vars.STRATEGY || 'claude' }}
+      JOURNAL_PATH: data/journal.sqlite3
+      ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+      ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: pip
 
-      - name: Install dependencies
-        run: pip install requests tzdata
+      - run: pip install -r requirements.txt
 
-      - name: Run trading cycle
-        env:
-          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
-          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      # The journal IS the account for the paper broker: positions, cash,
+      # drawdown state and the LLM response cache all live in it. Losing it
+      # resets the account to its starting balance and silently erases a
+      # drawdown halt, so it is restored before the cycle and saved after.
+      - name: Restore journal
+        id: journal
+        uses: actions/cache/restore@v4
+        with:
+          path: data/journal.sqlite3
+          key: journal-${{ env.MARKET }}-${{ github.run_id }}
+          restore-keys: |
+            journal-${{ env.MARKET }}-
+
+      - name: Report journal state
+        run: |
+          if [ -f data/journal.sqlite3 ]; then
+            echo "::notice::Journal restored ($(du -h data/journal.sqlite3 | cut -f1))"
+          else
+            echo "::warning::No journal restored -- this cycle starts from a fresh account."
+          fi
+
+      - name: Run one cycle
         run: python trader.py
+
+      - name: Save journal
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/journal.sqlite3
+          key: journal-${{ env.MARKET }}-${{ github.run_id }}
+
+      # A second, human-readable copy. Caches are evicted after 7 idle days and
+      # can be dropped when the repo cache fills; the artifact is the backup you
+      # download if that happens.
+      - name: Upload journal artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: journal-${{ env.MARKET }}
+          path: data/journal.sqlite3
+          retention-days: 30
+          overwrite: true
+          if-no-files-found: warn

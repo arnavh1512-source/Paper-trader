@@ -1,0 +1,8 @@
+# Runtime dependencies. Deliberately small: everything else is stdlib.
+requests>=2.31,<3
+# The model's replies are parsed as a schema, not trusted as JSON: a malformed
+# or hallucinated field must fail as a validation error, not as a trade.
+pydantic>=2.7,<3
+# Windows and slim Linux images ship no IANA zone database, and the whole bot
+# is timezone-critical (session bounds, square-off, holiday calendar).
+tzdata>=2024.1

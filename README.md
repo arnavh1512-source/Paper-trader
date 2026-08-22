@@ -1,40 +1,193 @@
-# Claude Paper Trader
+# claude-trader
 
-Automated paper trading bot powered by Claude AI + Alpaca. Runs free on GitHub Actions — no PC required.
+A paper-trading research bot for **NSE (India)** and **US equities**, with the
+same decision path running live and in backtest.
 
-## Setup (5 steps)
+It is not a money machine and it is not advice. It is an instrument for asking
+one question honestly: *does a language model add anything to a trading decision
+that a simple momentum rule does not?* Every part of the design exists to make
+that question answerable rather than to make the equity curve look good.
 
-### 1. Create a GitHub account
-Go to [github.com](https://github.com) and sign up for free.
+> **Paper trading only.** The default broker for the US is Alpaca's paper
+> endpoint; NSE has no free sandbox, so it uses an internal paper book stored in
+> the journal. Nothing here is financial advice, and no result from it predicts
+> anything about real money.
 
-### 2. Create a new repository
-- Click the **+** icon top right → **New repository**
-- Name it: `claude-trader`
-- Set it to **Private**
-- Click **Create repository**
+---
 
-### 3. Upload the files
-- Click **uploading an existing file**
-- Upload both `trader.py` and the `.github/workflows/trader.yml` file
-- Click **Commit changes**
+## What it does in one cycle
 
-### 4. Add your secret keys
-- Go to your repo → **Settings** → **Secrets and variables** → **Actions**
-- Click **New repository secret** and add these 3 secrets:
+```
+survey the universe -> pick candidates -> decide per symbol -> risk gate -> execute -> journal
+```
 
-| Name | Value |
-|------|-------|
-| `ALPACA_API_KEY` | Your Alpaca Key ID (e.g. PKXXXXXXXX) |
-| `ALPACA_SECRET_KEY` | Your Alpaca Secret Key |
-| `ANTHROPIC_API_KEY` | Your Anthropic API key (sk-ant-...) |
+1. **Survey** — one batched snapshot call for the whole universe.
+2. **Pick** — the strategy proposes a handful of symbols to look at closely.
+   It may also *abstain*, which is a valid and frequently correct answer.
+3. **Decide** — for each candidate (and every open position) the strategy sees
+   bars, indicators, the current quote, its own position and unrealised P&L, and
+   returns buy / sell / hold with a confidence score.
+4. **Risk** — a gate that the strategy cannot talk its way past: position caps,
+   sector caps, per-trade notional, cash reserve, quote staleness, spread,
+   cost-to-edge ratio, daily loss limit and a drawdown breaker.
+5. **Execute** — orders carry a deterministic client order id, and market orders
+   are **never retried**. A retried market order is a second position.
+6. **Journal** — every decision, order, fill, skip and reason is written to
+   SQLite *whether or not it traded*. Decisions that were skipped are the most
+   valuable rows in the database.
 
-### 5. Enable Actions
-- Go to your repo → **Actions** tab
-- Click **I understand my workflows, go ahead and enable them**
+The backtester calls the exact same `run_cycle`. Only the broker and the data
+source are swapped. There is no separate "backtest strategy" that can quietly
+drift from the live one.
 
-## That's it!
-The bot will automatically run every 15 minutes on weekdays during US market hours (9:30am–4pm ET). You can watch it run under the **Actions** tab in your repo.
+---
 
-## Checking trades
-- **GitHub Actions tab** → click any run to see Claude's decisions in the logs
-- **[app.alpaca.markets](https://app.alpaca.markets)** → Orders / Positions to see actual trades
+## Quick start
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+```
+
+Run an offline backtest with no keys and no network at all:
+
+```bash
+python -m claude_trader --market in backtest --synthetic --days 60 --strategy momentum
+```
+
+Check your configuration and connectivity:
+
+```bash
+python -m claude_trader --market in doctor
+```
+
+Run one live paper cycle without sending anything:
+
+```bash
+python -m claude_trader --market in trade --dry-run
+```
+
+---
+
+## Commands
+
+| Command | What it is for |
+|---|---|
+| `trade` | Run one live paper-trading cycle. This is what the scheduler calls. |
+| `backtest` | Replay the decision path over history (`--synthetic` for offline). |
+| `calibrate` | Resolve past decisions against what actually happened and score the confidence gate. |
+| `report` | Render a markdown report for a journalled run, with a buy-and-hold benchmark. |
+| `doctor` | Check config, credentials, timezone data and feed reachability. |
+
+Global flags: `--market {in,us}`, `--segment {intraday,delivery}`,
+`--journal PATH`, `-v`.
+
+### Calibration is the point
+
+```bash
+python -m claude_trader --market in calibrate --horizon 8
+```
+
+This buckets every decision by the confidence the strategy claimed and reports
+what actually happened afterwards. If "confidence 9" is not measurably better
+than "confidence 6", the confidence number is noise and the gate that reads it
+is decoration. The original version of this bot had a hard-coded
+`confidence >= 7` threshold and no way to know whether it meant anything.
+
+---
+
+## The two markets
+
+| | India (`--market in`) | US (`--market us`) |
+|---|---|---|
+| Exchange | NSE | NYSE / NASDAQ |
+| Session | 09:15–15:30 IST | 09:30–16:00 ET |
+| Benchmark | `NIFTYBEES` | `SPY` |
+| Data feed | Yahoo (no key needed) | Alpaca |
+| Broker | internal paper book | Alpaca paper API |
+| Shares | whole shares, ₹0.05 tick | fractional, $0.01 tick |
+| Starting cash | ₹100,000 | $10,000 |
+| Max per trade | ₹10,000 | $100 |
+| Costs modelled | brokerage, STT, stamp duty, exchange + SEBI fees, GST | commission-free, spread + slippage |
+
+`--segment intraday` (NSE only) squares off before the close and pays the lower
+intraday STT rate. Choosing it forces square-off on and caps the maximum holding
+period at the session — an intraday configuration that could hold overnight is a
+configuration that will one day hold overnight.
+
+---
+
+## Configuration
+
+Everything is environment variables; flags override them. The ones that matter
+most:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MARKET` | `in` | `in` or `us` |
+| `TRADE_SEGMENT` | `intraday` | NSE only: `intraday` or `delivery` |
+| `STRATEGY` | `claude` | `claude` or `momentum` (the free control group) |
+| `DRY_RUN` | `0` | Decide and journal, send no orders |
+| `JOURNAL_PATH` | `data/journal.sqlite3` | The account lives here |
+| `MAX_POSITIONS` | 5 | Concurrent holdings |
+| `MAX_NOTIONAL_PER_TRADE` | market default | Hard cap per order |
+| `MIN_CONFIDENCE` | 7 | The gate calibration exists to test |
+| `MAX_DRAWDOWN_PCT` | — | Breaker: halts new entries |
+| `DAILY_LOSS_LIMIT_PCT` | — | Breaker: halts for the day |
+| `RISK_PER_TRADE_PCT` | — | ATR-based position sizing |
+
+Secrets — `ANTHROPIC_API_KEY`, and `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` for
+the US path — come from the environment or GitHub Actions secrets. They are
+never read from a file in the repo. The India path with `--strategy momentum`
+needs **no keys at all**.
+
+Run `python -m claude_trader doctor` to see which ones are missing and whether
+that is fatal for your configuration.
+
+---
+
+## Running on GitHub Actions
+
+`.github/workflows/trader.yml` runs one cycle per schedule tick. Set the three
+secrets under **Settings → Secrets and variables → Actions**, and set `MARKET`
+and `STRATEGY` as repository *variables*.
+
+The journal is cached between runs and uploaded as an artifact, because **the
+journal is the account**: positions, cash, the drawdown-breaker state and the
+model response cache all live in it. Losing it resets the balance and silently
+clears a halt.
+
+The cron block for NSE is active by default; the US block is commented out
+directly beneath it. GitHub's scheduler fires late routinely, so the windows are
+padded — the bot checks the calendar itself and no-ops outside the session.
+
+---
+
+## Development
+
+```bash
+pytest
+pytest --cov=claude_trader --cov-report=term-missing
+```
+
+875 tests, ~98% coverage. `.github/workflows/tests.yml` runs them on 3.11 and
+3.12 with **no secrets in scope** — every test that touches a broker or the
+model goes through a fake, by design.
+
+Architecture, invariants and the reasoning behind each of them:
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+---
+
+## Honest limitations
+
+- **Backtests are optimistic.** Fills are modelled at the next bar's open with a
+  spread and slippage estimate. Real fills are worse, especially in the small
+  NSE names.
+- **Yahoo intraday data is delayed and occasionally wrong.** It is good enough
+  for research and not good enough for anything else.
+- **An LLM is not a forecaster.** Given twenty bars of OHLC it will produce
+  fluent reasoning for any direction you like. Calibration is included precisely
+  because that fluency is not evidence.
+- **A short run proves nothing.** Annualised figures from a few weeks of samples
+  are marked with `*` in reports for exactly this reason.
+- **Not financial advice.** No output of this program is a recommendation.

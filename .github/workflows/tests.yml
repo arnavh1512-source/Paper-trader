@@ -1,0 +1,40 @@
+name: Tests
+
+# The bot writes orders. A red suite here is the only thing standing between a
+# bad refactor and a scheduled cycle acting on it, so this runs on everything.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+
+      # No secrets are exposed to this job on purpose: every test that touches
+      # a broker or the model goes through a fake. A test that needs a real key
+      # is a test that will one day place a real order.
+      - name: Run the suite
+        run: pytest --cov=claude_trader --cov-report=term-missing --cov-fail-under=90
+
+      - name: Smoke-test the offline backtester
+        run: python -m claude_trader backtest --synthetic --days 20 --strategy momentum --seed 1

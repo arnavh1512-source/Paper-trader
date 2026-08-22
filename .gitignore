@@ -1,0 +1,29 @@
+# The journal IS the account: positions, cash, drawdown state, every decision
+# the model ever made and its API responses. It is state, not source, and it
+# does not belong in git.
+data/
+*.sqlite3
+*.sqlite3-journal
+
+# Backtest datasets. Regenerated on demand and large.
+data/cache/
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+build/
+dist/
+
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+.idea/
+.vscode/
+.DS_Store
