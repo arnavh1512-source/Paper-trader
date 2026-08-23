@@ -51,7 +51,23 @@ def configure_logging(verbose: bool = False) -> None:
     logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
-def build_strategy(config: AppConfig, journal: Journal | None = None):
+def build_news(config: AppConfig, *, live: bool):
+    """Headlines, and only when they can honestly be used.
+
+    News is deliberately unavailable to a backtest. The feeds return today's
+    headlines, and a 2024 bar priced against a 2026 headline is not a backtest,
+    it is a machine for producing encouraging numbers. Live cycles only.
+    """
+    from .data.news import NullNewsSource, RssNewsSource
+
+    if not (live and config.news_enabled):
+        return NullNewsSource()
+    return RssNewsSource(config.market,
+                         max_age_hours=config.news_max_age_hours)
+
+
+def build_strategy(config: AppConfig, journal: Journal | None = None, *,
+                   live: bool = False):
     """Pick the decision maker. ``momentum`` costs nothing and is the control
     group; ``claude`` is the thing being evaluated against it."""
     if config.strategy == "momentum":
@@ -68,6 +84,8 @@ def build_strategy(config: AppConfig, journal: Journal | None = None):
         profile=config.profile,
         segment=config.segment,
         costs=build_cost_model(config.market, config.segment),
+        news=build_news(config, live=live),
+        max_headlines=config.news_max_headlines,
     )
 
 
@@ -136,7 +154,7 @@ def run_live_cycle(
     now = now or datetime.now(timezone.utc)
 
     try:
-        strategy = build_strategy(config, journal)
+        strategy = build_strategy(config, journal, live=True)
         run_id = journal.resolve_live_run(
             strategy=config.strategy,
             now=now,

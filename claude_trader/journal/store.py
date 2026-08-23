@@ -23,7 +23,7 @@ from ..models import (
     PositionRisk,
     RiskVerdict,
 )
-from .schema import SCHEMA_SQL, SCHEMA_VERSION
+from .schema import ADDED_COLUMNS, SCHEMA_SQL, SCHEMA_VERSION
 
 
 def _iso(value: datetime) -> str:
@@ -46,10 +46,24 @@ class Journal:
         self._conn = sqlite3.connect(self.path, isolation_level=None)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA_SQL)
+        self._migrate()
         self._conn.execute(
             "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),
         )
+
+    def _migrate(self) -> None:
+        """Bring an older journal up to the current column set.
+
+        A journal is months of decisions; recreating it to add a column would
+        throw away the only record of what the bot actually did.
+        """
+        for table, column, decl in ADDED_COLUMNS:
+            existing = {row["name"] for row in
+                        self._conn.execute(f"PRAGMA table_info({table})")}
+            if existing and column not in existing:
+                self._conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
     # ------------------------------------------------------------------ infra
     def commit(self) -> None:
@@ -168,13 +182,15 @@ class Journal:
         indicators: Mapping[str, Any] | None = None,
         verdict: RiskVerdict | None = None,
         prompt_sha: str = "",
+        news: Sequence[str] = (),
         executed: bool = False,
     ) -> int:
         cur = self._conn.execute(
             "INSERT INTO decisions(run_id, cycle_id, ts, symbol, action, confidence,"
             " reason, dollars, source, price, indicators_json, prompt_sha,"
+            " news_json,"
             " risk_approved, risk_reason, executed)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 run_id,
                 cycle_id,
@@ -188,6 +204,7 @@ class Journal:
                 price,
                 json.dumps(dict(indicators or {}), default=str),
                 prompt_sha,
+                json.dumps(list(news)),
                 int(bool(verdict and verdict.approved)),
                 verdict.reason if verdict else "",
                 int(executed),

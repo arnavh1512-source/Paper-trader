@@ -42,6 +42,8 @@ class ClaudeStrategy:
         profile: MarketProfile | None = None,
         segment: str = "",
         costs: CostModel | None = None,
+        news=None,
+        max_headlines: int = 5,
     ) -> None:
         self._client = client
         self._universe = tuple(s.upper() for s in universe)
@@ -49,7 +51,26 @@ class ClaudeStrategy:
         self._profile = profile or get_market()
         self._segment = segment
         self._costs = costs
+        from ..data.news import NullNewsSource
+
+        self._news = news or NullNewsSource()
+        self._max_headlines = max_headlines
+        self.last_headlines: tuple = ()
         self.last_prompt_sha = ""
+
+    def _headlines_for(self, symbol: str, now):
+        """Headlines for one symbol, or nothing at all.
+
+        Failure here is never allowed to become failure of the cycle: a feed
+        outage must not stop the bot from managing -- or exiting -- an open
+        position.
+        """
+        try:
+            found = self._news.headlines([symbol], now, self._max_headlines)
+        except Exception:  # noqa: BLE001 - news is decoration, never a blocker
+            log.warning("news lookup for %s failed; deciding without it", symbol)
+            return ()
+        return tuple(found.get(symbol, ()))
 
     def _cost_floor(self, snapshot: MarketSnapshot) -> float:
         """What a round trip on a typical ticket costs, as a fraction.
@@ -70,6 +91,13 @@ class ClaudeStrategy:
         return self._client
 
     # ------------------------------------------------------------------ pick
+    def _market_headlines(self, now) -> tuple:
+        try:
+            return tuple(self._news.market_headlines(now, self._max_headlines))
+        except Exception:  # noqa: BLE001 - see _headlines_for
+            log.warning("market news lookup failed; picking without it")
+            return ()
+
     def pick(
         self,
         now: datetime,
@@ -93,6 +121,7 @@ class ClaudeStrategy:
             max_new_positions,
             profile=self._profile,
             segment=self._segment,
+            news=self._market_headlines(now),
         )
         try:
             raw = self._client.complete(PICKER_SYSTEM, prompt, max_tokens=400)
@@ -126,6 +155,8 @@ class ClaudeStrategy:
         strategy_note: str,
         state: PortfolioState,
     ) -> Decision:
+        headlines = self._headlines_for(snapshot.symbol, snapshot.as_of)
+        self.last_headlines = headlines
         prompt = build_decision_prompt(
             snapshot,
             strategy_note,
@@ -133,6 +164,7 @@ class ClaudeStrategy:
             profile=self._profile,
             segment=self._segment,
             round_trip_cost_pct=self._cost_floor(snapshot),
+            news=headlines,
         )
         self.last_prompt_sha = prompt_fingerprint(
             getattr(self._client, "model", "unknown"), DECIDER_SYSTEM, prompt

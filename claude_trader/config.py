@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 
 import os
+from pathlib import Path
 from dataclasses import dataclass, field, fields, replace
 from typing import Any
 
@@ -24,6 +25,33 @@ _TRUTHY = {"1", "true", "yes", "on"}
 VALID_STRATEGIES = ("claude", "momentum")
 VALID_BROKERS = ("alpaca", "paper")
 VALID_SEGMENTS = ("intraday", "delivery")
+
+
+def load_dotenv(path: str = ".env") -> int:
+    """Fill in missing environment variables from a local ``.env``.
+
+    Existing values always win, so a GitHub Actions secret is never shadowed by
+    a stale file someone left in the checkout. Returns how many names were set,
+    which is the only thing worth logging: printing the values would print the
+    keys.
+    """
+    file = Path(path)
+    if not file.is_file():
+        return 0
+    loaded = 0
+    for line in file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, _, value = line.partition("=")
+        name = name.strip()
+        if not name or name in os.environ:
+            continue
+        value = value.split(" #")[0].strip().strip("'\"")
+        if value:
+            os.environ[name] = value
+            loaded += 1
+    return loaded
 
 
 def _env_str(name: str, default: str = "") -> str:
@@ -139,26 +167,46 @@ class RiskConfig:
             raise ConfigError("Invalid RiskConfig: " + "; ".join(problems))
 
     @classmethod
-    def from_env(cls, profile: MarketProfile | None = None) -> "RiskConfig":
-        """Defaults follow the market.
+    def from_env(
+        cls,
+        profile: MarketProfile | None = None,
+        equity: float | None = None,
+    ) -> "RiskConfig":
+        """Defaults follow the market *and* the size of the book.
 
         A Rs 10,000 ticket and a 100 dollar ticket are not the same trade, and
         holding overnight on NSE costs several times what intraday costs -- so
         the starting numbers come from the profile instead of forcing every
         Indian user to discover and override eight variables.
+
+        They also have to follow ``equity``, because the profile defaults are
+        written for a one-lakh book and are actively incoherent on a small one.
+        At Rs 2,000 a 20% position cap is Rs 400 while the Indian minimum ticket
+        is Rs 500: every order is simultaneously too large and too small, and
+        the bot trades exactly nothing, forever, without ever erroring. Scaling
+        the ceiling *and* the floor to the book keeps the two ends apart.
         """
         profile = profile or get_market()
         indian = profile.key == "in"
+        equity = equity if equity and equity > 0 else profile.starting_cash
+        # Below this the profile's absolute rupee floors stop making sense.
+        small_book = equity < profile.starting_cash / 4
         # One session of bars, less a little, keeps intraday genuinely intraday.
         default_hold = max(4, profile.bars_per_session - 2) if indian else 130
         return cls(
             max_notional_per_trade=_env_float(
-                "MAX_NOTIONAL_PER_TRADE", profile.max_per_trade
+                "MAX_NOTIONAL_PER_TRADE",
+                min(profile.max_per_trade, equity * 0.40),
             ),
-            max_position_pct=_env_float("MAX_POSITION_PCT", 0.20),
+            # A small book cannot diversify and pretending otherwise just means
+            # never reaching one whole share of anything.
+            max_position_pct=_env_float(
+                "MAX_POSITION_PCT", 0.40 if small_book else 0.20
+            ),
             risk_per_trade_pct=_env_float("RISK_PER_TRADE_PCT", 0.01),
             min_trade_notional=_env_float(
-                "MIN_TRADE_NOTIONAL", 500.0 if indian else 1.0
+                "MIN_TRADE_NOTIONAL",
+                min(500.0, equity * 0.05) if indian else min(1.0, equity * 0.05),
             ),
             min_cash_reserve_pct=_env_float("MIN_CASH_RESERVE_PCT", 0.05),
             atr_stop_multiple=_env_float("ATR_STOP_MULTIPLE", 2.0),
@@ -168,7 +216,7 @@ class RiskConfig:
             hard_stop_pct=_env_float("HARD_STOP_PCT", 0.08),
             square_off_enabled=_env_bool("SQUARE_OFF_ENABLED", indian),
             square_off_minutes_before_close=_env_int("SQUARE_OFF_MINUTES", 15),
-            max_positions=_env_int("MAX_POSITIONS", 5),
+            max_positions=_env_int("MAX_POSITIONS", 3 if small_book else 5),
             max_sector_positions=_env_int("MAX_SECTOR_POSITIONS", 2),
             max_sector_pct=_env_float("MAX_SECTOR_PCT", 0.40),
             max_correlation=_env_float("MAX_CORRELATION", 0.85),
@@ -191,7 +239,7 @@ class RiskConfig:
 @dataclass(frozen=True, slots=True)
 class LLMConfig:
     api_key: str = ""
-    model: str = "claude-sonnet-4-5"
+    model: str = "claude-sonnet-5"
     max_tokens: int = 1024
     temperature: float = 0.0
     timeout_seconds: float = 45.0
@@ -202,7 +250,7 @@ class LLMConfig:
     def from_env(cls) -> "LLMConfig":
         return cls(
             api_key=_env_str("ANTHROPIC_API_KEY"),
-            model=_env_str("CLAUDE_MODEL", "claude-sonnet-4-5"),
+            model=_env_str("CLAUDE_MODEL", "claude-sonnet-5"),
             max_tokens=_env_int("CLAUDE_MAX_TOKENS", 1024),
             temperature=_env_float("CLAUDE_TEMPERATURE", 0.0),
             timeout_seconds=_env_float("CLAUDE_TIMEOUT", 45.0),
@@ -229,6 +277,14 @@ class AppConfig:
     verbose: bool = False
     journal_path: str = "data/journal.sqlite3"
     strategy: str = "claude"
+
+    # --- news ---------------------------------------------------------------
+    # Off by default. Headlines change what the model is shown, and a setting
+    # that silently alters decisions is one that should be opted into.
+    news_enabled: bool = False
+    news_max_headlines: int = 5
+    news_max_age_hours: float = 24.0
+
     risk: RiskConfig = field(default_factory=RiskConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
 
@@ -253,6 +309,28 @@ class AppConfig:
             )
 
         problems: list[str] = []
+        # The sizing deadlock. Every buy is clamped down to the smallest of the
+        # position cap, the per-trade ceiling and the deployable cash, and then
+        # rejected if the result falls under the minimum ticket. When the floor
+        # sits above that smallest ceiling, *every* order fails that last test
+        # and the bot runs for months placing nothing while every component
+        # reports itself healthy. Silence is the worst possible failure mode
+        # here, so the contradiction is an error at startup rather than a
+        # mystery in the journal.
+        ceiling = min(
+            self.starting_cash * self.risk.max_position_pct,
+            self.risk.max_notional_per_trade,
+            self.starting_cash * (1.0 - self.risk.min_cash_reserve_pct),
+        )
+        if ceiling < self.risk.min_trade_notional:
+            sym = profile.currency_symbol
+            problems.append(
+                f"no order can ever be placed: the largest permitted buy is "
+                f"{sym}{ceiling:,.2f} but MIN_TRADE_NOTIONAL is "
+                f"{sym}{self.risk.min_trade_notional:,.2f}. Raise "
+                f"MAX_POSITION_PCT / MAX_NOTIONAL_PER_TRADE / STARTING_CASH, "
+                f"or lower MIN_TRADE_NOTIONAL"
+            )
         if self.strategy not in VALID_STRATEGIES:
             problems.append(f"STRATEGY must be one of {', '.join(VALID_STRATEGIES)}")
         if self.broker not in VALID_BROKERS:
@@ -360,7 +438,12 @@ class AppConfig:
             verbose=_env_bool("VERBOSE", False),
             journal_path=_env_str("JOURNAL_PATH", "data/journal.sqlite3"),
             strategy=_env_str("STRATEGY", "claude").lower(),
-            risk=RiskConfig.from_env(profile),
+            news_enabled=_env_bool("NEWS_ENABLED", False),
+            news_max_headlines=_env_int("NEWS_MAX_HEADLINES", 5),
+            news_max_age_hours=_env_float("NEWS_MAX_AGE_HOURS", 24.0),
+            risk=RiskConfig.from_env(
+                profile, equity=_env_float("STARTING_CASH", profile.starting_cash)
+            ),
             llm=LLMConfig.from_env(),
         )
         overrides = {k: v for k, v in overrides.items() if v is not None}

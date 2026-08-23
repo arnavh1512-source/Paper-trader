@@ -5,7 +5,7 @@ this table set there is no way to answer "is this better than buying SPY", so
 it is written on every cycle including cycles where nothing is traded.
 """
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA_SQL = """
 PRAGMA journal_mode=WAL;
@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS decisions (
     price           REAL NOT NULL DEFAULT 0,
     indicators_json TEXT NOT NULL DEFAULT '{}',
     prompt_sha      TEXT NOT NULL DEFAULT '',
+    news_json       TEXT NOT NULL DEFAULT '[]',
     risk_approved   INTEGER NOT NULL DEFAULT 0,
     risk_reason     TEXT NOT NULL DEFAULT '',
     executed        INTEGER NOT NULL DEFAULT 0
@@ -157,3 +158,13 @@ CREATE TABLE IF NOT EXISTS llm_cache (
     hits       INTEGER NOT NULL DEFAULT 0
 );
 """
+
+
+# Columns added after a table first shipped. ``CREATE TABLE IF NOT EXISTS`` is a
+# no-op on an existing database, so a journal written by an older version keeps
+# its old shape forever unless something adds the column explicitly. Additive
+# only: nothing here drops or rewrites a column, so an old journal stays
+# readable and a partially-migrated one is still valid.
+ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("decisions", "news_json", "TEXT NOT NULL DEFAULT '[]'"),
+)

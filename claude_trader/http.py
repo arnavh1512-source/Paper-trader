@@ -36,11 +36,61 @@ def request_json(
     session: requests.Session | None = None,
     sleeper: Callable[[int], None] = _sleep_backoff,
 ) -> Any:
-    """Perform an HTTP request and return decoded JSON.
+    """Perform an HTTP request and return decoded JSON."""
+    response = _request(
+        method, url, headers=headers, params=params, json_body=json_body,
+        timeout=timeout, max_attempts=max_attempts, error_type=error_type,
+        session=session, sleeper=sleeper,
+    )
+    if not response.content:
+        return {}
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise error_type(f"{method} {url} returned non-JSON body") from exc
 
-    Retries only on transport errors and the status codes in RETRYABLE_STATUS.
-    A 4xx other than 408/429 fails immediately -- it will never succeed.
+
+def request_text(
+    method: str,
+    url: str,
+    *,
+    headers: Mapping[str, str] | None = None,
+    params: Mapping[str, Any] | None = None,
+    timeout: float = 15.0,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    error_type: type[Exception] = MarketDataError,
+    session: requests.Session | None = None,
+    sleeper: Callable[[int], None] = _sleep_backoff,
+) -> str:
+    """Same retry policy, for endpoints that answer in XML rather than JSON.
+
+    News feeds are RSS. Nothing else about how they should be fetched differs,
+    and giving them their own ad-hoc request loop is how one of the two loops
+    ends up retrying something it should not.
     """
+    return _request(
+        method, url, headers=headers, params=params, json_body=None,
+        timeout=timeout, max_attempts=max_attempts, error_type=error_type,
+        session=session, sleeper=sleeper,
+    ).text
+
+
+def _request(
+    method: str,
+    url: str,
+    *,
+    headers: Mapping[str, str] | None = None,
+    params: Mapping[str, Any] | None = None,
+    json_body: Any | None = None,
+    timeout: float = 15.0,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    error_type: type[Exception] = MarketDataError,
+    session: requests.Session | None = None,
+    sleeper: Callable[[int], None] = _sleep_backoff,
+) -> Any:
+    """Retries only on transport errors and the status codes in
+    RETRYABLE_STATUS. A 4xx other than 408/429 fails immediately -- it will
+    never succeed."""
     caller = session or requests
     last_error: Exception | None = None
 
@@ -74,12 +124,7 @@ def request_json(
                 f"{method} {url} failed with {response.status_code}: {detail}"
             )
 
-        if not response.content:
-            return {}
-        try:
-            return response.json()
-        except ValueError as exc:
-            raise error_type(f"{method} {url} returned non-JSON body") from exc
+        return response
 
     raise error_type(f"{method} {url} failed after {max_attempts} attempts: {last_error}")
 

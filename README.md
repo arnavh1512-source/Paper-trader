@@ -46,7 +46,11 @@ drift from the live one.
 
 ```bash
 pip install -r requirements.txt -r requirements-dev.txt
+cp .env.example .env      # then edit it: your capital, your limits
 ```
+
+`.env` is read at startup and never overrides a variable that is already set,
+so a GitHub Actions secret always wins over a stale file in the checkout.
 
 Run an offline backtest with no keys and no network at all:
 
@@ -66,6 +70,12 @@ Run one live paper cycle without sending anything:
 python -m claude_trader --market in trade --dry-run
 ```
 
+Then look at what it did:
+
+```bash
+python -m claude_trader --market in dashboard --open
+```
+
 ---
 
 ## Commands
@@ -76,6 +86,7 @@ python -m claude_trader --market in trade --dry-run
 | `backtest` | Replay the decision path over history (`--synthetic` for offline). |
 | `calibrate` | Resolve past decisions against what actually happened and score the confidence gate. |
 | `report` | Render a markdown report for a journalled run, with a buy-and-hold benchmark. |
+| `dashboard` | Write a single self-contained HTML page: positions, round trips, the order log, and every decision including the ones the risk gate blocked. |
 | `doctor` | Check config, credentials, timezone data and feed reachability. |
 
 Global flags: `--market {in,us}`, `--segment {intraday,delivery}`,
@@ -126,11 +137,16 @@ most:
 | `MARKET` | `in` | `in` or `us` |
 | `TRADE_SEGMENT` | `intraday` | NSE only: `intraday` or `delivery` |
 | `STRATEGY` | `claude` | `claude` or `momentum` (the free control group) |
+| `CLAUDE_MODEL` | `claude-sonnet-5` | Which Claude decides; `claude-opus-5` for deeper reasoning |
 | `DRY_RUN` | `0` | Decide and journal, send no orders |
 | `JOURNAL_PATH` | `data/journal.sqlite3` | The account lives here |
 | `MAX_POSITIONS` | 5 | Concurrent holdings |
 | `MAX_NOTIONAL_PER_TRADE` | market default | Hard cap per order |
 | `MIN_CONFIDENCE` | 7 | The gate calibration exists to test |
+| `STARTING_CASH` | market default | The paper account's opening balance |
+| `NEWS_ENABLED` | `false` | Show recent headlines to the model on live cycles |
+| `NEWS_MAX_HEADLINES` | 5 | Headlines per symbol |
+| `NEWS_MAX_AGE_HOURS` | 24 | How stale a headline may be |
 | `MAX_DRAWDOWN_PCT` | — | Breaker: halts new entries |
 | `DAILY_LOSS_LIMIT_PCT` | — | Breaker: halts for the day |
 | `RISK_PER_TRADE_PCT` | — | ATR-based position sizing |
@@ -142,6 +158,49 @@ needs **no keys at all**.
 
 Run `python -m claude_trader doctor` to see which ones are missing and whether
 that is fatal for your configuration.
+
+---
+
+## Seeing what it did
+
+`dashboard` writes one HTML file with no scripts, no CDN, and no external
+requests — open it from disk, or commit it, or mail it to yourself.
+
+```bash
+python -m claude_trader --market in dashboard --out data/dashboard.html --open
+```
+
+It shows open positions with their stops and targets, every closed round trip,
+the raw order log, and — the section that matters — every decision the strategy
+made, including the ones the risk layer refused, with the reason it gave. Holds
+are counted rather than listed. No broker screen will show you the trades that
+never happened; this is the only place they exist.
+
+---
+
+## News
+
+Off by default. With `NEWS_ENABLED=true`, live cycles fetch recent headlines
+from public RSS (Google News for individual companies, plus a couple of
+market-wide feeds) and show them to the model as clearly-delimited untrusted
+text.
+
+Three things are deliberate:
+
+- **Headlines are data, not instructions.** They arrive inside a `<headlines>`
+  fence, and both system prompts state that nothing in a headline can change
+  the model's instructions or output format. Nothing read from a feed ever
+  reaches the risk layer — news can make the model *want* to trade, and it
+  still has to get past a gate that never reads it.
+- **Failure is silent and harmless.** A feed that is down, slow, or malformed
+  produces no headlines and a logged warning. It never blocks a cycle, and it
+  never blocks an exit.
+- **Backtests never see news.** The feeds return today's headlines. Pricing a
+  2024 bar against a 2026 headline is not a backtest, it is a machine for
+  producing encouraging numbers.
+
+The headlines a decision saw are stored with it, so the dashboard can show you
+what the model was reading when it made the call.
 
 ---
 

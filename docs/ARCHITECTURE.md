@@ -38,14 +38,14 @@ statement about the backtester, not about the strategy.
 | `config.py` | One frozen `AppConfig` built from env + flags. Validates, and raises `ConfigError` rather than starting with a nonsensical setup. |
 | `markets/` | `MarketProfile` per market: session, timezone, tick size, lot rules, benchmark, currency, cost model. The only place a market-specific fact is allowed to live. |
 | `models.py` | Frozen domain types: `Bar`, `Quote`, `Snapshot`, `Position`, `Account`, `OrderRequest`, `OrderResult`, `Decision`. |
-| `data/` | `MarketDataSource` implementations (Alpaca, Yahoo) plus indicators. |
+| `data/` | `MarketDataSource` implementations (Alpaca, Yahoo), RSS headlines, and indicators. |
 | `strategies/` | `Strategy` protocol; `MomentumStrategy` (the control) and `ClaudeStrategy` (the subject). |
 | `llm/` | Anthropic client with retries, response caching, and **schema validation** of every reply. |
 | `risk/` | The gate. Sizing, caps, breakers, staleness, spread, cost-to-edge. |
 | `engine/` | `run_cycle` and the executor that turns an approved decision into an order. |
 | `brokers/` | `Broker` protocol; Alpaca (live paper), `PaperBroker` (journal-backed book), `SimulatedBroker` (backtest). |
 | `backtest/` | Dataset fetch/cache and the replay engine. |
-| `analytics/` | Metrics, calibration, markdown reports. |
+| `analytics/` | Metrics, calibration, markdown reports, and the HTML dashboard. |
 | `journal/` | SQLite schema and store. The system of record. |
 
 ---
@@ -197,7 +197,7 @@ row is what makes them distinguishable months later.
 
 ## Testing
 
-875 tests, ~98% statement coverage, all offline.
+969 tests, ~98% statement coverage, all offline.
 
 The suite is organised by the thing being defended rather than by module — test
 names read as claims about behaviour ("a market order is never retried",

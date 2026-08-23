@@ -74,6 +74,13 @@ class MarketProfile:
     timeframe: str
     bars_per_session: int
 
+    # Other exchanges the same company may be listed on, as the data vendor
+    # spells them. India is the reason this exists: a name absent from NSE is
+    # often present on BSE under the identical ticker with a ``.BO`` suffix,
+    # and a dead feed for one listing should not remove a company from the
+    # universe. Tried in order, only when the primary listing returns nothing.
+    data_suffix_fallbacks: tuple[str, ...] = ()
+
     # ------------------------------------------------------------------ time
     @property
     def tz(self):
@@ -106,9 +113,26 @@ class MarketProfile:
         """Exchange ticker as the *data vendor* spells it (Yahoo wants .NS)."""
         return f"{symbol}{self.data_suffix}" if self.data_suffix else symbol
 
+    def data_symbols(self, symbol: str) -> tuple[str, ...]:
+        """Every spelling worth trying, primary listing first.
+
+        The order is the priority order and it is not arbitrary: the primary
+        exchange is where the liquidity is, so a fallback listing is a last
+        resort for a name that would otherwise have no data at all, never a
+        cheaper alternative to be preferred.
+        """
+        out = [self.data_symbol(symbol)]
+        out.extend(
+            f"{symbol}{suffix}"
+            for suffix in self.data_suffix_fallbacks
+            if f"{symbol}{suffix}" not in out
+        )
+        return tuple(out)
+
     def native_symbol(self, vendor_symbol: str) -> str:
-        if self.data_suffix and vendor_symbol.endswith(self.data_suffix):
-            return vendor_symbol[: -len(self.data_suffix)]
+        for suffix in (self.data_suffix, *self.data_suffix_fallbacks):
+            if suffix and vendor_symbol.endswith(suffix):
+                return vendor_symbol[: -len(suffix)]
         return vendor_symbol
 
     def sector_of(self, symbol: str) -> str:

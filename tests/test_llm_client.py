@@ -53,7 +53,7 @@ def text_reply(text: str) -> dict:
 
 
 def client(journal=None, session=None, **cfg) -> ClaudeClient:
-    config = LLMConfig(api_key="sk-test", model="claude-sonnet-4-5", **cfg)
+    config = LLMConfig(api_key="sk-test", model="claude-sonnet-5", **cfg)
     return ClaudeClient(config, cache=journal, session=session or FakeSession())
 
 
@@ -113,7 +113,7 @@ def test_the_payload_carries_the_configured_model_and_temperature():
     session = FakeSession(text_reply("ok"))
     client(session=session, temperature=0.0).complete("sys", "prompt text")
     body = session.calls[0]["json"]
-    assert body["model"] == "claude-sonnet-4-5"
+    assert body["model"] == "claude-sonnet-5"
     assert body["temperature"] == 0.0
     assert body["system"] == "sys"
     assert body["messages"] == [{"role": "user", "content": "prompt text"}]
@@ -208,7 +208,7 @@ def test_different_models_do_not_share_cache_entries(journal):
     """Two models answering the same prompt are two different experiments."""
     session_a = FakeSession(text_reply("sonnet says"))
     session_b = FakeSession(text_reply("haiku says"))
-    ClaudeClient(LLMConfig(api_key="k", model="claude-sonnet-4-5"),
+    ClaudeClient(LLMConfig(api_key="k", model="claude-sonnet-5"),
                  cache=journal, session=session_a).complete("sys", "p")
     other = ClaudeClient(LLMConfig(api_key="k", model="claude-haiku-4-5"),
                          cache=journal, session=session_b)
@@ -225,7 +225,7 @@ def test_usage_is_reported_honestly(journal):
 
 
 def test_the_model_name_is_exposed_for_the_prompt_fingerprint():
-    assert client().model == "claude-sonnet-4-5"
+    assert client().model == "claude-sonnet-5"
 
 
 # --------------------------------------------------------------- scripted

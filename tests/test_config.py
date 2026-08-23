@@ -247,3 +247,79 @@ def test_llm_config_reads_its_own_keys(monkeypatch):
     assert llm.api_key == "sk-test"
     assert llm.model == "claude-test"
     assert llm.temperature == 0.0
+
+
+# ------------------------------------------------------- sizing vs the book
+def test_a_book_too_small_for_its_own_minimum_ticket_is_refused():
+    """The deadlock this guard exists for.
+
+    Every buy is clamped down to the position cap and then rejected if the
+    result falls under the minimum ticket. When the floor sits above the cap,
+    every order fails that test -- so the bot runs for months placing nothing
+    while every component reports itself healthy. Silence is the worst failure
+    mode available here, so it has to be an error at startup.
+    """
+    with pytest.raises(ConfigError, match="no order can ever be placed"):
+        AppConfig(
+            market="in",
+            starting_cash=2_000.0,
+            risk=RiskConfig(
+                max_position_pct=0.20,     # -> Rs 400
+                min_trade_notional=500.0,  # -> floor above the ceiling
+            ),
+        )
+
+
+def test_the_per_trade_ceiling_can_deadlock_it_too():
+    """The position cap is not the only ceiling; the tighter of the two binds."""
+    with pytest.raises(ConfigError, match="no order can ever be placed"):
+        AppConfig(
+            market="in",
+            starting_cash=100_000.0,
+            risk=RiskConfig(
+                max_position_pct=0.50,
+                max_notional_per_trade=200.0,
+                min_trade_notional=500.0,
+            ),
+        )
+
+
+def test_a_coherent_small_book_is_accepted():
+    config = AppConfig(
+        market="in",
+        starting_cash=2_000.0,
+        risk=RiskConfig(
+            max_position_pct=0.40,
+            max_notional_per_trade=800.0,
+            min_trade_notional=100.0,
+        ),
+    )
+    assert config.starting_cash == 2_000.0
+
+
+def test_sizing_defaults_scale_down_to_a_small_book(monkeypatch):
+    """The profile defaults are written for one lakh and deadlock at Rs 2,000,
+    so the defaults themselves have to follow the equity."""
+    monkeypatch.setenv("MARKET", "in")
+    monkeypatch.setenv("STARTING_CASH", "2000")
+    risk = AppConfig.from_env().risk
+    assert risk.min_trade_notional < 2_000 * risk.max_position_pct, "still deadlocked"
+    assert risk.max_notional_per_trade <= 2_000
+    assert risk.max_positions < 5, "a Rs 2,000 book cannot hold five names"
+
+
+def test_the_one_lakh_defaults_are_left_alone(monkeypatch):
+    """Scaling for small books must not quietly re-tune the normal case."""
+    monkeypatch.setenv("MARKET", "in")
+    risk = AppConfig.from_env().risk
+    assert risk.max_position_pct == 0.20
+    assert risk.max_notional_per_trade == 10_000.0
+    assert risk.min_trade_notional == 500.0
+    assert risk.max_positions == 5
+
+
+def test_an_explicit_override_still_wins_over_the_scaled_default(monkeypatch):
+    monkeypatch.setenv("MARKET", "in")
+    monkeypatch.setenv("STARTING_CASH", "2000")
+    monkeypatch.setenv("MAX_POSITION_PCT", "0.25")
+    assert AppConfig.from_env().risk.max_position_pct == 0.25

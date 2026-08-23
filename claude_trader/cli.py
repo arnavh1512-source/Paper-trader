@@ -6,6 +6,7 @@
     python -m claude_trader backtest --synthetic --strategy momentum
     python -m claude_trader calibrate --run 3
     python -m claude_trader report --run 3 --out report.md
+    python -m claude_trader dashboard --open
     python -m claude_trader doctor
 
 ``--market`` and ``--segment`` sit on the top-level parser rather than on each
@@ -18,16 +19,18 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import webbrowser
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .analytics.calibration import DEFAULT_HORIZONS, calibrate, resolve_outcomes
+from .analytics.dashboard import collect, render_dashboard
 from .analytics.metrics import compute_performance
 from .analytics.report import render_calibration, render_report
 from .app import build_strategy, configure_logging, run_live_cycle, summarise
 from .backtest.dataset import DatasetSpec, load_dataset, synthetic_bars
 from .backtest.engine import compare, run_backtest, run_buy_and_hold
-from .config import AppConfig
+from .config import AppConfig, load_dotenv
 from .data.sources import HistoricalMarketData
 from .errors import TraderError
 from .journal.store import Journal
@@ -271,6 +274,46 @@ def cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+# ------------------------------------------------------------------- dashboard
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    """Render one run as a self-contained HTML page.
+
+    Writes a file rather than serving one. A long-lived server next to a
+    trading account is an attack surface with no upside, and the whole point of
+    inlining everything is that the file needs nothing to render.
+    """
+    config = make_config(args)
+    with Journal(config.journal_path) as journal:
+        run_id = args.run or _latest_run_id(journal)
+        if run_id is None:
+            print("No runs in the journal yet. Run `trade` or `backtest` first.",
+                  file=sys.stderr)
+            return 1
+        orders = [dict(r) for r in journal.query(
+            "SELECT symbol, side, qty, price, ts FROM orders WHERE run_id = ? "
+            "ORDER BY ts, id", (run_id,),
+        )]
+        performance = compute_performance(
+            journal.equity_curve(run_id), orders,
+            periods_per_year=config.periods_per_year,
+        )
+        calibration = calibrate(journal, run_id, args.horizon)
+        try:
+            data = collect(journal, run_id, config, performance,
+                           calibration if calibration.resolved else None)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+
+    target = Path(args.out)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(render_dashboard(data, config.money), encoding="utf-8")
+    print(f"Wrote {target.resolve()}")
+    if args.open:
+        webbrowser.open(target.resolve().as_uri())
+    return 0
+
+
 # ---------------------------------------------------------------------- doctor
 def cmd_doctor(args: argparse.Namespace) -> int:
     """Answer one question: would a live cycle work right now, and with what?
@@ -323,6 +366,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     data_ok, detail = _data_source_ok(config)
     print(f"{'PASS' if data_ok else 'FAIL'}  {'market data':<{width}}  {detail}")
 
+    if data_ok:
+        reach_ok, detail = _affordable_ok(config)
+        print(f"{'PASS' if reach_ok else 'WARN'}  {'universe reach':<{width}}  {detail}")
+
     # The Anthropic key is advisory unless the claude strategy is selected, and
     # a warm timezone fallback is a warning, not a stoppage.
     blocking = [
@@ -343,6 +390,54 @@ def _tz_ok(name: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def _affordable_ok(config: AppConfig) -> tuple[bool, str]:
+    """How much of the universe can this book actually buy?
+
+    On a whole-share market the position cap and the share price interact in a
+    way no amount of config validation catches: a Rs 800 ceiling simply cannot
+    reach one share of a Rs 2,300 stock, so that name is silently unreachable.
+    Nothing errors, nothing is logged, it is just never picked -- and the run
+    quietly measures a smaller universe than the one it reports.
+
+    A warning, never a failure: a reduced universe is still a valid experiment.
+    """
+    from .app import build_market_data
+
+    profile = config.profile
+    if profile.fractional_shares:
+        return True, "fractional shares -- every name is reachable at any size"
+
+    budget = min(
+        config.starting_cash * config.risk.max_position_pct,
+        config.risk.max_notional_per_trade,
+    )
+    try:
+        prices = build_market_data(config).latest_prices(
+            list(config.universe), datetime.now(timezone.utc)
+        )
+    except TraderError as exc:
+        return True, f"could not price the universe ({exc}); skipped"
+
+    priced = {s: p for s, p in prices.items() if p and p > 0}
+    lot = profile.lot_size or 1
+    unreachable = sorted(s for s, p in priced.items() if p * lot > budget)
+    sym = profile.currency_symbol
+    if not priced:
+        return True, "no prices returned; skipped"
+    if not unreachable:
+        return True, (
+            f"all {len(priced)} priced names reachable "
+            f"within the {sym}{budget:,.0f} position cap"
+        )
+    shown = ", ".join(unreachable[:6]) + (
+        f" (+{len(unreachable) - 6} more)" if len(unreachable) > 6 else ""
+    )
+    return False, (
+        f"{len(unreachable)}/{len(priced)} names cost more than the "
+        f"{sym}{budget:,.0f} position cap and can never be bought: {shown}"
+    )
 
 
 def _data_source_ok(config: AppConfig) -> tuple[bool, str]:
@@ -369,6 +464,19 @@ def _journal_ok(path: str) -> bool:
 
 
 def _latest_run_id(journal: Journal) -> int | None:
+    """The most recent run worth looking at.
+
+    A backtest writes two runs: the strategy and the buy-and-hold control that
+    exists to be compared against it. The control is always written second, so
+    a naive "latest" resolves to the baseline and reports an empty decision log
+    for a run that made hundreds of decisions.
+    """
+    rows = journal.query(
+        "SELECT id FROM runs WHERE strategy != 'buy_and_hold' "
+        "ORDER BY id DESC LIMIT 1"
+    )
+    if rows:
+        return int(rows[0]["id"])
     row = journal.latest_run()
     return int(row["id"]) if row else None
 
@@ -439,6 +547,13 @@ def build_parser() -> argparse.ArgumentParser:
     rep.add_argument("--out", default=None)
     rep.set_defaults(func=cmd_report)
 
+    dash = sub.add_parser("dashboard", help="render a run as a self-contained HTML page")
+    dash.add_argument("--run", type=int, default=None)
+    dash.add_argument("--horizon", type=int, default=26)
+    dash.add_argument("--out", default="data/dashboard.html")
+    dash.add_argument("--open", action="store_true", help="open it in your browser")
+    dash.set_defaults(func=cmd_dashboard)
+
     doc = sub.add_parser("doctor", help="check configuration, credentials and connectivity")
     doc.set_defaults(func=cmd_doctor)
     return parser
@@ -448,6 +563,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     configure_logging(args.verbose)
+    if load_dotenv():
+        log.debug("loaded settings from .env")
 
     try:
         return int(args.func(args))

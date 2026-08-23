@@ -48,6 +48,25 @@ jobs:
       TRADE_SEGMENT: ${{ inputs.segment || vars.TRADE_SEGMENT || 'intraday' }}
       DRY_RUN: ${{ inputs.dry_run && '1' || vars.DRY_RUN || '0' }}
       STRATEGY: ${{ vars.STRATEGY || 'claude' }}
+
+      # The book, and the sizing that has to be coherent with it. These are
+      # passed explicitly because .env is gitignored and never reaches the
+      # runner: without them every scheduled cycle would silently fall back to
+      # the profile's one-lakh defaults and measure a different account than
+      # the one being run locally. Override any of them as repository
+      # variables under Settings -> Secrets and variables -> Actions.
+      STARTING_CASH: ${{ vars.STARTING_CASH || '2000' }}
+      MAX_NOTIONAL_PER_TRADE: ${{ vars.MAX_NOTIONAL_PER_TRADE || '800' }}
+      MAX_POSITION_PCT: ${{ vars.MAX_POSITION_PCT || '0.40' }}
+      MIN_TRADE_NOTIONAL: ${{ vars.MIN_TRADE_NOTIONAL || '100' }}
+      MAX_POSITIONS: ${{ vars.MAX_POSITIONS || '3' }}
+      MAX_SECTOR_POSITIONS: ${{ vars.MAX_SECTOR_POSITIONS || '1' }}
+      # Deliberately the market's full default universe. The position cap is a
+      # fraction of equity, so expensive names become reachable on their own as
+      # the account grows; a pinned list would freeze that shut.
+      UNIVERSE: ${{ vars.UNIVERSE || '' }}
+      # Set NEWS_ENABLED as a repository variable to switch headlines on.
+      NEWS_ENABLED: ${{ vars.NEWS_ENABLED || 'false' }}
       JOURNAL_PATH: data/journal.sqlite3
       ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
       ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
@@ -86,6 +105,22 @@ jobs:
 
       - name: Run one cycle
         run: python trader.py
+
+      # The page you actually look at. Written from the journal after the cycle,
+      # so it always describes the run that just happened.
+      - name: Render dashboard
+        if: always()
+        run: python -m claude_trader dashboard --out data/dashboard.html || true
+
+      - name: Upload dashboard
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-${{ env.MARKET }}
+          path: data/dashboard.html
+          retention-days: 30
+          overwrite: true
+          if-no-files-found: warn
 
       - name: Save journal
         if: always()

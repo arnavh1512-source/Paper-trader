@@ -270,6 +270,10 @@ def run_cycle(deps: CycleDeps, now: datetime) -> CycleReport:
             indicators=_indicator_dict(snapshot.indicators),
             verdict=verdict,
             prompt_sha=getattr(deps.strategy, "last_prompt_sha", ""),
+            # What the model was shown, stored beside what it decided. Without
+            # this, "why did it buy that" is unanswerable after the fact.
+            news=[h.title for h in
+                  getattr(deps.strategy, "last_headlines", ())],
         )
 
         if decision.action is Action.SELL and is_held:

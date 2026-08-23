@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 import pytest
 
 from claude_trader import cli
-from claude_trader.config import AppConfig
+from claude_trader.config import AppConfig, RiskConfig
 from claude_trader.engine.cycle import CycleReport
 from claude_trader.errors import MarketDataError, TraderError
 from claude_trader.journal.store import Journal
@@ -275,6 +275,7 @@ def test_no_symbols_means_the_whole_universe():
 # ------------------------------------------------------------------ doctor
 def test_doctor_reports_the_configured_market(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(cli, "_data_source_ok", lambda config: (True, "ok"))
+    monkeypatch.setattr(cli, "_affordable_ok", lambda config: (True, "ok"))
     cli.cmd_doctor(parse("--journal", str(tmp_path / "j.db"), "--market", "in",
                          "doctor"))
     out = capsys.readouterr().out
@@ -286,6 +287,7 @@ def test_doctor_does_not_demand_alpaca_keys_on_an_nse_run(tmp_path, monkeypatch,
                                                           capsys):
     """Reporting a failure that does not exist trains people to ignore it."""
     monkeypatch.setattr(cli, "_data_source_ok", lambda config: (True, "ok"))
+    monkeypatch.setattr(cli, "_affordable_ok", lambda config: (True, "ok"))
     monkeypatch.setenv("STRATEGY", "momentum")
     code = cli.cmd_doctor(parse("--journal", str(tmp_path / "j.db"),
                                 "--market", "in", "doctor"))
@@ -306,6 +308,7 @@ def test_a_missing_anthropic_key_does_not_block_the_momentum_strategy(
     """The control group costs nothing and needs no key; failing here would make
     the free path look broken."""
     monkeypatch.setattr(cli, "_data_source_ok", lambda config: (True, "ok"))
+    monkeypatch.setattr(cli, "_affordable_ok", lambda config: (True, "ok"))
     monkeypatch.setenv("STRATEGY", "momentum")
     assert cli.cmd_doctor(parse("--journal", str(tmp_path / "j.db"),
                                 "--market", "in", "doctor")) == 0
@@ -314,6 +317,7 @@ def test_a_missing_anthropic_key_does_not_block_the_momentum_strategy(
 def test_a_missing_anthropic_key_does_block_the_claude_strategy(tmp_path,
                                                                 monkeypatch):
     monkeypatch.setattr(cli, "_data_source_ok", lambda config: (True, "ok"))
+    monkeypatch.setattr(cli, "_affordable_ok", lambda config: (True, "ok"))
     monkeypatch.setenv("STRATEGY", "claude")
     assert cli.cmd_doctor(parse("--journal", str(tmp_path / "j.db"),
                                 "--market", "in", "doctor")) == 1
@@ -322,6 +326,7 @@ def test_a_missing_anthropic_key_does_block_the_claude_strategy(tmp_path,
 def test_an_unreachable_feed_fails_the_check(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(cli, "_data_source_ok",
                         lambda config: (False, "unreachable: timeout"))
+    monkeypatch.setattr(cli, "_affordable_ok", lambda config: (True, "ok"))
     assert cli.cmd_doctor(parse("--journal", str(tmp_path / "j.db"),
                                 "--market", "in", "doctor")) == 1
     assert "FAIL  market data" in capsys.readouterr().out
@@ -407,3 +412,141 @@ def test_an_unexpected_error_is_not_swallowed(monkeypatch):
     monkeypatch.setattr(cli, "run_live_cycle", boom)
     with pytest.raises(ZeroDivisionError):
         cli.main(["trade"])
+
+
+# ------------------------------------------------------------------ dashboard
+def test_the_dashboard_writes_one_self_contained_file(tmp_path, capsys):
+    with Journal(str(tmp_path / "j.db")) as j:
+        j.resolve_live_run(strategy="momentum", now=NOW, config={})
+        j.commit()
+    out = tmp_path / "page.html"
+    args = parse("--journal", str(tmp_path / "j.db"), "dashboard",
+                 "--out", str(out))
+
+    assert cli.cmd_dashboard(args) == 0
+    html = out.read_text(encoding="utf-8")
+    assert html.startswith("<!doctype html>")
+    assert "https://" not in html.split("<footer>")[0]
+    assert str(out.resolve()) in capsys.readouterr().out
+
+
+def test_the_dashboard_on_an_empty_journal_says_what_to_run_first(
+        tmp_path, capsys):
+    args = parse("--journal", str(tmp_path / "j.db"), "dashboard",
+                 "--out", str(tmp_path / "page.html"))
+    assert cli.cmd_dashboard(args) == 1
+    assert "No runs in the journal yet" in capsys.readouterr().err
+
+
+def test_the_dashboard_on_a_missing_run_does_not_write_a_blank_page(
+        tmp_path, capsys):
+    """A page that renders for a run id that does not exist reads as 'this run
+    did nothing', which is a claim about the account rather than about the id."""
+    with Journal(str(tmp_path / "j.db")) as j:
+        j.resolve_live_run(strategy="momentum", now=NOW, config={})
+        j.commit()
+    out = tmp_path / "page.html"
+    args = parse("--journal", str(tmp_path / "j.db"), "dashboard",
+                 "--run", "999", "--out", str(out))
+
+    assert cli.cmd_dashboard(args) == 1
+    assert not out.exists()
+    assert "999" in capsys.readouterr().err
+
+
+def test_the_dashboard_only_opens_a_browser_when_asked(tmp_path, monkeypatch):
+    """Opening a window is a side effect. A scheduled job that renders a page
+    every fifteen minutes must not also spawn a browser every fifteen minutes."""
+    opened = []
+    monkeypatch.setattr(cli.webbrowser, "open", lambda url: opened.append(url))
+    with Journal(str(tmp_path / "j.db")) as j:
+        j.resolve_live_run(strategy="momentum", now=NOW, config={})
+        j.commit()
+
+    out = tmp_path / "page.html"
+    base = ["--journal", str(tmp_path / "j.db"), "dashboard", "--out", str(out)]
+    assert cli.cmd_dashboard(parse(*base)) == 0
+    assert opened == []
+
+    assert cli.cmd_dashboard(parse(*base, "--open")) == 0
+    assert len(opened) == 1
+
+
+def test_the_buy_and_hold_control_is_not_the_default_run(tmp_path):
+    """A backtest writes the strategy run first and its control second. Latest
+    by id would resolve to the control and report an empty decision log for a
+    run that made hundreds of decisions."""
+    with Journal(str(tmp_path / "j.db")) as j:
+        j.start_run("backtest", "momentum", NOW, {})
+        j.start_run("backtest", "buy_and_hold", NOW, {})
+        j.commit()
+        assert j.query("SELECT strategy FROM runs WHERE id = ?",
+                       (cli._latest_run_id(j),))[0]["strategy"] == "momentum"
+
+
+# ------------------------------------------------------------ universe reach
+class _Priced:
+    """A market data source that knows prices and nothing else."""
+
+    def __init__(self, prices):
+        self._prices = prices
+
+    def latest_prices(self, symbols, as_of):
+        return {s: self._prices[s] for s in symbols if s in self._prices}
+
+
+def _reach(monkeypatch, prices, **cfg):
+    monkeypatch.setattr(cli, "build_market_data", lambda c: _Priced(prices),
+                        raising=False)
+    import claude_trader.app as app
+    monkeypatch.setattr(app, "build_market_data", lambda c: _Priced(prices))
+    return cli._affordable_ok(AppConfig(market="in", **cfg))
+
+
+def test_reach_names_the_stocks_a_small_book_can_never_buy(monkeypatch):
+    """The failure this catches is invisible otherwise: an unaffordable name is
+    never picked, never logged, and quietly shrinks the universe under test."""
+    ok, detail = _reach(
+        monkeypatch,
+        {"WIPRO": 180.0, "MARUTI": 13_565.0, "TCS": 2_302.0},
+        starting_cash=2_000.0,
+        universe=("WIPRO", "MARUTI", "TCS"),
+        risk=RiskConfig(max_position_pct=0.40, max_notional_per_trade=800.0,
+                        min_trade_notional=100.0),
+    )
+    assert not ok
+    assert "MARUTI" in detail and "TCS" in detail
+    assert "WIPRO" not in detail
+
+
+def test_reach_passes_when_the_whole_universe_is_affordable(monkeypatch):
+    ok, detail = _reach(
+        monkeypatch,
+        {"WIPRO": 180.0, "ITC": 269.0},
+        starting_cash=2_000.0,
+        universe=("WIPRO", "ITC"),
+        risk=RiskConfig(max_position_pct=0.40, max_notional_per_trade=800.0,
+                        min_trade_notional=100.0),
+    )
+    assert ok
+    assert "all 2" in detail
+
+
+def test_reach_is_a_warning_not_a_failure(monkeypatch, tmp_path, capsys):
+    """A reduced universe is still a valid experiment, so it must not be an
+    exit code -- only something the operator is told about."""
+    monkeypatch.setattr(cli, "_data_source_ok", lambda config: (True, "ok"))
+    monkeypatch.setattr(cli, "_affordable_ok",
+                        lambda config: (False, "3/30 out of reach"))
+    monkeypatch.setenv("STRATEGY", "momentum")
+    code = cli.cmd_doctor(parse("--journal", str(tmp_path / "j.db"),
+                                "--market", "in", "doctor"))
+    assert code == 0
+    assert "WARN  universe reach" in capsys.readouterr().out
+
+
+def test_reach_is_not_asked_on_a_fractional_market(monkeypatch):
+    """Fractional shares make the whole question moot -- any budget reaches any
+    price -- and asking would cost a pointless round trip per symbol."""
+    ok, detail = cli._affordable_ok(AppConfig(market="us", starting_cash=10.0))
+    assert ok and "fractional" in detail

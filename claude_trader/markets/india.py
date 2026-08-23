@@ -165,7 +165,7 @@ def _profile():
 
     return MarketProfile(
         key="in",
-        name="NSE India",
+        name="NSE / BSE India",
         currency="INR",
         currency_symbol="₹",
         tz_name="Asia/Kolkata",
@@ -178,6 +178,11 @@ def _profile():
         fractional_shares=False,   # NSE equities trade in whole shares only
         lot_size=1,
         data_suffix=".NS",
+        # BSE. The same large caps are listed on both exchanges under the same
+        # ticker at effectively the same price -- arbitrage sees to that -- so
+        # this buys reach, not cheaper entries: names that trade only on BSE,
+        # and a second source when the NSE feed returns nothing for a symbol.
+        data_suffix_fallbacks=(".BO",),
         holidays=HOLIDAYS,
         starting_cash=100_000.0,   # one lakh: a realistic retail starting book
         max_per_trade=10_000.0,

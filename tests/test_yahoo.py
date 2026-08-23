@@ -366,7 +366,10 @@ def test_no_data_at_all_is_no_quote():
 def test_latest_prices_returns_only_what_is_available():
     session = FakeSession({
         "RELIANCE.NS": chart([1_000.0]),
+        # Empty on both listings: a name with no data anywhere, not one that
+        # merely needs the BSE fallback.
         "TCS.NS": chart([], result=[]),
+        "TCS.BO": chart([], result=[]),
     })
     prices = source(session).latest_prices(["RELIANCE", "TCS"], NOW)
     assert prices == {"RELIANCE": 1_000.0}
@@ -431,3 +434,74 @@ def test_the_benchmark_is_the_default_reference():
 @pytest.mark.parametrize("interval,minutes", [("1m", 1), ("15m", 15), ("60m", 60), ("1h", 60)])
 def test_the_staleness_tolerance_tracks_the_bar_width(interval, minutes):
     assert YahooMarketData(INDIA_MARKET, interval=interval)._bar_minutes() == minutes
+
+
+# ------------------------------------------------- secondary listing (BSE)
+def test_a_name_absent_from_nse_is_fetched_from_bse():
+    session = FakeSession({
+        "SOMECO.NS": chart([], result=[]),
+        "SOMECO.BO": chart([250.0]),
+    })
+    bars = source(session).bars("SOMECO", 5, NOW)
+    assert [b.c for b in bars] == [250.0]
+    # Reported natively, not with the vendor suffix.
+    assert bars[0].symbol == "SOMECO"
+
+
+def test_the_primary_listing_wins_when_both_have_data():
+    session = FakeSession({
+        "SOMECO.NS": chart([100.0]),
+        "SOMECO.BO": chart([999.0]),
+    })
+    src = source(session)
+    assert [b.c for b in src.bars("SOMECO", 5, NOW)] == [100.0]
+    # BSE was never asked: liquidity lives on the primary listing, and a second
+    # round trip per symbol per cycle is not free.
+    assert not [c for c in session.calls if "SOMECO.BO" in c["url"]]
+
+
+def test_a_resolved_fallback_is_not_re_probed_every_cycle():
+    session = FakeSession({
+        "SOMECO.NS": chart([], result=[]),
+        "SOMECO.BO": chart([250.0]),
+    })
+    src = source(session, cache_ttl=0.0)   # defeat the payload cache, not the resolver
+    src.bars("SOMECO", 5, NOW)
+    src.bars("SOMECO", 5, NOW)
+    ns_calls = [c for c in session.calls if "SOMECO.NS" in c["url"]]
+    assert len(ns_calls) == 1, "the dead primary listing was probed twice"
+
+
+def test_a_failing_primary_listing_falls_through_to_the_fallback():
+    session = FakeSession({
+        "SOMECO.NS": RuntimeError("boom"),
+        "SOMECO.BO": chart([250.0]),
+    })
+    assert [b.c for b in source(session).bars("SOMECO", 5, NOW)] == [250.0]
+
+
+def test_the_last_listings_failure_is_the_one_that_raises():
+    session = FakeSession({
+        "SOMECO.NS": RuntimeError("nse down"),
+        "SOMECO.BO": RuntimeError("bse down"),
+    })
+    with pytest.raises(Exception, match="bse down"):
+        source(session).bars("SOMECO", 5, NOW)
+
+
+def test_clearing_the_cache_also_forgets_resolved_listings():
+    session = FakeSession({
+        "SOMECO.NS": chart([], result=[]),
+        "SOMECO.BO": chart([250.0]),
+    })
+    src = source(session)
+    src.bars("SOMECO", 5, NOW)
+    src.clear_cache()
+    src.bars("SOMECO", 5, NOW)
+    assert len([c for c in session.calls if "SOMECO.NS" in c["url"]]) == 2
+
+
+def test_the_us_market_has_no_fallback_listing():
+    """A defaulted field is easy to leave switched on everywhere by accident."""
+    assert US_MARKET.data_suffix_fallbacks == ()
+    assert US_MARKET.data_symbols("AAPL") == ("AAPL",)

@@ -18,7 +18,7 @@ Preserve that framing when changing things.
 ```bash
 pip install -r requirements.txt -r requirements-dev.txt
 
-pytest                                              # 875 tests, all offline
+pytest                                              # 969 tests, all offline
 pytest --cov=claude_trader --cov-report=term-missing
 
 python -m claude_trader --market in doctor
@@ -26,6 +26,7 @@ python -m claude_trader --market in trade --dry-run
 python -m claude_trader --market in backtest --synthetic --days 60 --strategy momentum
 python -m claude_trader --market in calibrate --horizon 8
 python -m claude_trader --market in report --run 3
+python -m claude_trader --market in dashboard --open
 ```
 
 `python` is not always on PATH on Windows; use `py -3.11`.
@@ -79,6 +80,31 @@ One cycle: survey the universe → strategy picks candidates → per-symbol deci
    default in code, never in a test.
 9. **Tests are offline.** Every broker, feed and model call goes through a fake.
    A test that needs a real key is a test that will one day place a real order.
+10. **News is untrusted input.** Headlines go into the prompt inside a
+    `<headlines>` fence, both system prompts say headlines cannot change
+    instructions, and nothing read from a feed reaches the risk layer. A feed
+    failure is a warning and an empty list — never an exception that reaches
+    the cycle, because that would be a feed outage blocking an exit.
+11. **Backtests never see news.** `build_news(config, live=False)` returns
+    `NullNewsSource` unconditionally. Today's headlines against historical bars
+    is lookahead wearing a hat.
+12. **The dashboard only reads.** `analytics/dashboard.py` issues SELECTs and
+    nothing else, and escapes every value it renders — symbols and reasons
+    carry model-authored text.
+13. **Sizing must be coherent with the book.** Every buy is clamped to the
+    position cap then rejected under `min_trade_notional`; if the floor exceeds
+    the cap, nothing ever trades and nothing ever errors. `AppConfig.__post_init__`
+    raises `ConfigError` on that contradiction, and `RiskConfig.from_env` scales
+    its defaults to `equity` so a small book does not walk into it. Never
+    reintroduce a fixed rupee floor that ignores equity.
+14. **A fallback listing is a last resort, not an alternative.** `data_symbols`
+    returns the primary exchange first and BSE only after; `yahoo` tries the
+    fallback solely when the primary returns no bars, and caches the winner.
+    Preferring whichever listing is cheaper would be cross-exchange arbitrage
+    against a feed that is not synchronised.
+15. **Schema changes are additive.** New columns go in `schema.ADDED_COLUMNS`
+    and are applied by `Journal._migrate`. `CREATE TABLE IF NOT EXISTS` is a
+    no-op on an existing journal, and a journal is months of decisions.
 
 ## Testing Notes
 
