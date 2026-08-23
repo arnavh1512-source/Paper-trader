@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 import pytest
 
 from claude_trader.config import LLMConfig
-from claude_trader.errors import LLMError
+from claude_trader.errors import ConfigError, LLMBudgetExceeded, LLMError
 from claude_trader.llm.client import (
     ANTHROPIC_URL,
     ANTHROPIC_VERSION,
@@ -248,3 +248,99 @@ def test_the_scripted_client_records_what_it_was_asked():
     assert c.prompts == [("SYSTEM", "PROMPT")]
     assert c.usage_summary == "1 scripted calls"
     assert c.model == "scripted"
+
+
+# ------------------------------------------------------------- spend ceiling
+def test_calls_are_unlimited_unless_a_ceiling_is_configured():
+    """Live trading runs one hourly cycle and cannot run away, so the default
+    must not be a limit someone has to remember to raise."""
+    session = FakeSession(*[text_reply("ok")] * 5)
+    c = client(session=session)
+    for _ in range(5):
+        c.complete("sys", str(_))
+    assert c.calls_made == 5
+
+
+def test_the_ceiling_stops_billable_calls_once_it_is_reached():
+    session = FakeSession(*[text_reply("ok")] * 5)
+    c = client(session=session, max_api_calls=2)
+    c.complete("sys", "one")
+    c.complete("sys", "two")
+    with pytest.raises(LLMBudgetExceeded, match="ceiling of 2"):
+        c.complete("sys", "three")
+    assert c.calls_made == 2
+    assert len(session.calls) == 2, "the third request must never leave the process"
+
+
+def test_exceeding_the_budget_is_an_llm_error_so_the_bot_degrades_to_hold():
+    """The strategy catches LLMError and holds; the risk engine's stops and
+    square-off never consult the model. A budget that raised something the
+    strategy did not catch would turn a spending limit into a crash that
+    stranded open positions."""
+    assert issubclass(LLMBudgetExceeded, LLMError)
+
+
+def test_a_cached_answer_is_free_and_does_not_count_against_the_ceiling(journal):
+    session = FakeSession(text_reply("first"))
+    c = client(journal=journal, session=session, max_api_calls=1)
+    assert c.complete("sys", "p") == "first"
+    # Same prompt: served from cache, so it must not raise even though the
+    # ceiling is already spent.
+    assert c.complete("sys", "p") == "first"
+    assert (c.calls_made, c.cache_hits) == (1, 1)
+
+
+def test_a_negative_ceiling_is_refused_rather_than_silently_blocking_everything():
+    with pytest.raises(ConfigError):
+        LLMConfig(max_api_calls=-1)
+
+
+# --------------------------------------------------------------- token usage
+def test_billed_tokens_are_read_back_from_the_response_not_estimated():
+    session = FakeSession(
+        {"content": [{"type": "text", "text": "a"}], "usage": {"input_tokens": 1800, "output_tokens": 240}},
+        {"content": [{"type": "text", "text": "b"}], "usage": {"input_tokens": 900, "output_tokens": 110}},
+    )
+    c = client(session=session)
+    c.complete("sys", "one")
+    c.complete("sys", "two")
+    assert (c.input_tokens, c.output_tokens) == (2700, 350)
+    assert "2,700 in / 350 out tokens" in c.usage_summary
+
+
+def test_a_response_without_usage_accounting_is_still_a_usable_answer():
+    """Accounting is a convenience. Discarding a tradeable decision because the
+    usage block was missing would let a reporting detail block a trade."""
+    session = FakeSession(text_reply("still fine"))
+    c = client(session=session)
+    assert c.complete("sys", "p") == "still fine"
+    assert (c.input_tokens, c.output_tokens) == (0, 0)
+
+
+@pytest.mark.parametrize("usage", [
+    {"input_tokens": "1800"},      # string
+    {"input_tokens": -5},          # negative
+    {"input_tokens": True},        # bool is an int subclass
+    {"input_tokens": None},
+    "not a mapping",
+])
+def test_malformed_usage_accounting_is_ignored_rather_than_trusted(usage):
+    session = FakeSession({"content": [{"type": "text", "text": "a"}], "usage": usage})
+    c = client(session=session)
+    c.complete("sys", "p")
+    assert c.input_tokens == 0
+
+
+def test_the_summary_names_the_ceiling_so_a_truncated_run_is_explicable():
+    c = client(session=FakeSession(text_reply("ok")), max_api_calls=50)
+    c.complete("sys", "p")
+    assert "(ceiling 50)" in c.usage_summary
+
+
+def test_the_scripted_stand_in_carries_the_same_counters_as_the_real_client():
+    """Tests and offline backtests read these off whichever client they were
+    handed; an attribute the real one has and the fake lacks is a test that
+    passes offline and breaks in production."""
+    scripted = ScriptedClient()
+    for attr in ("calls_made", "cache_hits", "input_tokens", "output_tokens", "model"):
+        assert hasattr(scripted, attr)

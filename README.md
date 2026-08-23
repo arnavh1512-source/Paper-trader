@@ -304,6 +304,37 @@ The cron block for NSE is active by default; the US block is commented out
 directly beneath it. GitHub's scheduler fires late routinely, so the windows are
 padded — the bot checks the calendar itself and no-ops outside the session.
 
+### Cadence and what it costs
+
+Seven ticks a trading day: hourly from 09:30 to 14:30 IST, plus one at 15:15 IST
+that exists to land inside the square-off window. Hourly ticks step straight over
+that window — 14:30 is too early to trigger it and the next would land on the
+bell, where cron drift means the fill happens after close or not at all, leaving
+intraday positions overnight while the intraday cost model under-charges them.
+The extra tick tolerates about fifteen minutes of drift and still fills before
+the close.
+
+`momentum` costs nothing to run. `claude` makes at most ~5 API calls per cycle
+(one picker call plus one per candidate), so cadence is the dominant term in the
+bill:
+
+| Cadence | Cycles/day | Sonnet 5, per month |
+|---|---|---|
+| Hourly (current) | 7 | ~$4–6 |
+| Every 15 minutes | 25 | ~$13–20 |
+
+Rates move — check [Anthropic's pricing](https://claude.com/pricing#api) rather
+than trusting this table. The cadence applies identically to both strategies, so
+changing it does not contaminate the comparison between them.
+
+`MAX_API_CALLS` sets a hard ceiling on billable calls in one process; it is
+unset by default, because an hourly cycle cannot run away. It is there for
+backtests, where replaying six months of 15-minute bars is ~10,000 calls and the
+first person to discover that is usually the invoice. Hitting the ceiling raises
+`LLMBudgetExceeded`, which the strategy already degrades to HOLD — and stops,
+targets and square-off never consult the model, so **a spent budget can block an
+entry but never an exit**.
+
 ---
 
 ## Development
@@ -313,7 +344,7 @@ pytest
 pytest --cov=claude_trader --cov-report=term-missing
 ```
 
-972 tests, ~98% coverage. `.github/workflows/tests.yml` runs them on 3.11 and
+994 tests, ~98% coverage. `.github/workflows/tests.yml` runs them on 3.11 and
 3.12 with **no secrets in scope** — every test that touches a broker or the
 model goes through a fake, by design.
 

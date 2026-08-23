@@ -245,6 +245,15 @@ class LLMConfig:
     timeout_seconds: float = 45.0
     max_retries: int = 3
     cache_enabled: bool = True
+    # Hard ceiling on billable calls in one process. 0 means no ceiling, which
+    # is right for live trading -- an hourly cycle cannot run away. It exists
+    # for backtests: replaying six months at 15-minute bars is ~10,000 calls,
+    # and the first person to discover that is usually the invoice.
+    max_api_calls: int = 0
+
+    def __post_init__(self) -> None:
+        if self.max_api_calls < 0:
+            raise ConfigError("MAX_API_CALLS must be >= 0 (0 means no ceiling)")
 
     @classmethod
     def from_env(cls) -> "LLMConfig":
@@ -256,6 +265,7 @@ class LLMConfig:
             timeout_seconds=_env_float("CLAUDE_TIMEOUT", 45.0),
             max_retries=_env_int("CLAUDE_MAX_RETRIES", 3),
             cache_enabled=_env_bool("LLM_CACHE_ENABLED", True),
+            max_api_calls=_env_int("MAX_API_CALLS", 0),
         )
 
 

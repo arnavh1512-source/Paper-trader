@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from typing import Any, Mapping, Protocol
 
 from ..config import LLMConfig
-from ..errors import LLMError
+from ..errors import LLMBudgetExceeded, LLMError
 from ..http import request_json
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
@@ -48,6 +48,14 @@ class ClaudeClient:
         self._session = session
         self.calls_made = 0
         self.cache_hits = 0
+        # Billable tokens, read back from the API rather than estimated. An
+        # estimate drifts the moment a prompt changes; these are what is
+        # actually charged. Deliberately not converted to a currency figure --
+        # a price table hardcoded here would be silently wrong the first time
+        # Anthropic changes one, and a confidently wrong cost is worse than
+        # none. Multiply by the published rate when you want money.
+        self.input_tokens = 0
+        self.output_tokens = 0
 
     @property
     def model(self) -> str:
@@ -64,6 +72,15 @@ class ClaudeClient:
 
         if not self._config.api_key:
             raise LLMError("ANTHROPIC_API_KEY is not set")
+
+        ceiling = self._config.max_api_calls
+        if ceiling and self.calls_made >= ceiling:
+            # Checked after the cache, so a cached answer is always free and a
+            # re-run never trips the limit on work it already paid for.
+            raise LLMBudgetExceeded(
+                f"MAX_API_CALLS ceiling of {ceiling} reached; refusing further "
+                "billable calls this run"
+            )
 
         payload = request_json(
             "POST",
@@ -86,18 +103,37 @@ class ClaudeClient:
             session=self._session,
         )
         self.calls_made += 1
+        self._record_usage(payload)
         text = _first_text_block(payload)
 
         if self._cache is not None and self._config.cache_enabled:
             self._cache.cache_put(key, self._config.model, text, datetime.now(timezone.utc))
         return text
 
+    def _record_usage(self, payload: Any) -> None:
+        """Accumulate billed tokens. Never raises: a response that parses well
+        enough to trade on must not be discarded because its accounting block
+        was shaped unexpectedly."""
+        usage = payload.get("usage") if isinstance(payload, Mapping) else None
+        if not isinstance(usage, Mapping):
+            return
+        for field, attr in (("input_tokens", "input_tokens"), ("output_tokens", "output_tokens")):
+            value = usage.get(field)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                setattr(self, attr, getattr(self, attr) + value)
+
     @property
     def usage_summary(self) -> str:
         total = self.calls_made + self.cache_hits
         if total == 0:
             return "no model calls"
-        return f"{self.calls_made} API calls, {self.cache_hits} cache hits"
+        summary = f"{self.calls_made} API calls, {self.cache_hits} cache hits"
+        if self.input_tokens or self.output_tokens:
+            summary += f", {self.input_tokens:,} in / {self.output_tokens:,} out tokens"
+        ceiling = self._config.max_api_calls
+        if ceiling:
+            summary += f" (ceiling {ceiling})"
+        return summary
 
 
 def _first_text_block(payload: Any) -> str:
@@ -121,6 +157,8 @@ class ScriptedClient:
         self.prompts: list[tuple[str, str]] = []
         self.calls_made = 0
         self.cache_hits = 0
+        self.input_tokens = 0
+        self.output_tokens = 0
         self.model = "scripted"
 
     def complete(self, system: str, prompt: str, max_tokens: int | None = None) -> str:

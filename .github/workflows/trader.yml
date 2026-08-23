@@ -11,8 +11,20 @@ name: Paper trader
 
 on:
   schedule:
-    - cron: '*/15 3-10 * * 1-5'   # NSE session, padded either side
-    # - cron: '*/15 13-21 * * 1-5'  # uncomment for US, comment out the NSE line
+    # Hourly, not every 15 minutes. A 3-position momentum book re-decides the
+    # same thing four times an hour; the extra cycles bought noise and, on the
+    # `claude` strategy, roughly 3.5x the API bill. Same experiment, same
+    # universe, same risk gate -- and the cadence applies identically to both
+    # strategies, so it does not contaminate the comparison.
+    - cron: '0 4-9 * * 1-5'     # 09:30-14:30 IST, on the half hour
+    # Square-off runs at close - SQUARE_OFF_MINUTES (15:15 IST). Hourly ticks
+    # step straight over that window: 14:30 is too early to trigger it and the
+    # next one would land on the bell, where GitHub's habitual few minutes of
+    # cron drift means the fill happens after close or not at all. Intraday
+    # positions would then carry overnight while the intraday cost model
+    # under-charged them. This tick exists to land inside the window.
+    - cron: '45 9 * * 1-5'      # 15:15 IST, square-off
+    # - cron: '0 14-20 * * 1-5'   # uncomment for US, comment out the NSE lines
   workflow_dispatch:
     inputs:
       market:
@@ -92,6 +104,16 @@ jobs:
       ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
       ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      # Sonnet is the point of the experiment. The question is whether a
+      # frontier model beats a twenty-line SMA rule; a smaller model losing
+      # would not distinguish a failed idea from an under-powered one.
+      CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL || 'claude-sonnet-5' }}
+      # Unlimited by default: an hourly cycle makes at most ~5 calls and cannot
+      # run away. Set this as a repository variable if you want a hard stop.
+      # Hitting it raises LLMBudgetExceeded, which the strategy already degrades
+      # to HOLD -- stops and square-off do not consult the model, so a spent
+      # budget can block an entry but never an exit.
+      MAX_API_CALLS: ${{ vars.MAX_API_CALLS || '' }}
 
     steps:
       - uses: actions/checkout@v4
