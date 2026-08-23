@@ -70,10 +70,14 @@ jobs:
       # the profile's one-lakh defaults and measure a different account than
       # the one being run locally. Override any of them as repository
       # variables under Settings -> Secrets and variables -> Actions.
-      STARTING_CASH: ${{ vars.STARTING_CASH || '2000' }}
-      MAX_NOTIONAL_PER_TRADE: ${{ vars.MAX_NOTIONAL_PER_TRADE || '800' }}
+      STARTING_CASH: ${{ vars.STARTING_CASH || '5000' }}
+      # Left to RiskConfig.from_env, which derives both from equity:
+      # 40% of it per trade, and a floor of 5% capped at the Indian
+      # minimum ticket. Pinning them to rupee figures is how they end up
+      # describing a balance the account no longer has.
+      MAX_NOTIONAL_PER_TRADE: ${{ vars.MAX_NOTIONAL_PER_TRADE || '' }}
       MAX_POSITION_PCT: ${{ vars.MAX_POSITION_PCT || '0.40' }}
-      MIN_TRADE_NOTIONAL: ${{ vars.MIN_TRADE_NOTIONAL || '100' }}
+      MIN_TRADE_NOTIONAL: ${{ vars.MIN_TRADE_NOTIONAL || '' }}
       MAX_POSITIONS: ${{ vars.MAX_POSITIONS || '3' }}
       MAX_SECTOR_POSITIONS: ${{ vars.MAX_SECTOR_POSITIONS || '1' }}
       # Deliberately the market's full default universe. The position cap is a

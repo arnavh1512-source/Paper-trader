@@ -166,15 +166,20 @@ about a quarter of that, so `STARTING_CASH` re-scales the sizing defaults with
 it. Set the equity and leave the rest alone unless you have a reason:
 
 ```bash
-STARTING_CASH=2000
+STARTING_CASH=5000
 ```
 
-Two things change at that size, both because NSE and BSE trade **whole shares
-only**:
+Set that one variable and leave the caps alone: `max_notional_per_trade`
+derives as 40% of equity and `min_trade_notional` as 5% of it, capped at the
+Indian minimum ticket. Pinning either to a rupee figure is how they end up
+describing a balance the account no longer has.
 
-- **Most of the index is out of reach.** With a ₹2,000 book and a 40% position
-  cap, ₹800 does not buy one share of a ₹2,300 stock, so that name can never be
-  traded. `doctor` reports exactly which ones. This is not a bug to route
+Three things behave differently at this size, the first two because NSE and BSE
+trade **whole shares only**:
+
+- **Part of the index is out of reach.** With a ₹5,000 book and a 40% position
+  cap, ₹2,000 does not buy one share of a ₹2,300 stock, so that name cannot be
+  traded yet. `doctor` reports exactly which ones. This is not a bug to route
   around — it is what a small account is. Since the cap is a *fraction* of
   equity, names come back into reach on their own as the account grows, which
   is why the universe is deliberately left at the market default rather than
@@ -182,8 +187,14 @@ only**:
 - **The floor and the ceiling can cross.** At ₹2,000 the stock 20% position cap
   is ₹400 while the Indian minimum ticket is ₹500, so every order is at once
   too large and too small and *nothing ever trades* — silently, with no error
-  anywhere. That configuration is now refused at startup rather than discovered
+  anywhere. That configuration is refused at startup rather than discovered
   three weeks later in an empty journal.
+- **Changing `STARTING_CASH` does not move an account that already exists.**
+  The opening balance is the denominator of every return figure recorded
+  against it, so rewriting it under existing history would restate all of them.
+  The book wins and the mismatch is logged as a warning. To actually start at
+  the new balance, delete the journal — which discards its history, so do it
+  before there is history worth keeping.
 
 ---
 

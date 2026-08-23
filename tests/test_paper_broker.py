@@ -7,6 +7,7 @@ book that quietly invents money.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, Mapping
 
@@ -306,3 +307,24 @@ def test_reset_is_explicit_and_total(journal):
     assert b.account().cash == 100_000.0
     assert b.positions() == ()
     assert b.account().equity == 100_000.0
+
+
+def test_raising_the_starting_cash_does_not_restate_an_existing_book(journal, caplog):
+    """Opening balance is the denominator of every return figure recorded
+    against the account. Rewriting it under existing history would silently
+    restate all of them, so the book wins -- but silently ignoring the operator
+    is how someone spends a fortnight wondering why the balance never moved."""
+    broker(journal, cash=2000.0, account="momentum")
+
+    with caplog.at_level(logging.WARNING):
+        second = broker(journal, cash=5000.0, account="momentum")
+
+    assert second.account().equity == pytest.approx(2000.0)
+    assert "5,000.00" in caplog.text and "2,000.00" in caplog.text
+
+
+def test_an_unchanged_starting_cash_is_not_worth_a_warning(journal, caplog):
+    broker(journal, cash=2000.0, account="momentum")
+    with caplog.at_level(logging.WARNING):
+        broker(journal, cash=2000.0, account="momentum")
+    assert "STARTING_CASH" not in caplog.text

@@ -81,9 +81,30 @@ class PaperBroker:
     # ------------------------------------------------------------- lifecycle
     def _ensure_account(self, starting_cash: float) -> None:
         rows = self._journal.query(
-            "SELECT 1 FROM paper_account WHERE account = ?", (self._account,)
+            "SELECT starting_cash FROM paper_account WHERE account = ?",
+            (self._account,),
         )
         if rows:
+            # The account already exists, and it is not rewritten here. Opening
+            # balance is the denominator of every return figure in the journal;
+            # moving it under months of recorded trades would silently restate
+            # all of them.
+            #
+            # But a config that disagrees with the book is worth saying out
+            # loud, because the symptom otherwise is nothing at all: the
+            # operator raises STARTING_CASH, the bot keeps trading the old
+            # balance, and the only evidence is a number on a dashboard that
+            # never changes.
+            stored = float(rows[0]["starting_cash"])
+            if abs(stored - float(starting_cash)) > 0.005:
+                log.warning(
+                    "STARTING_CASH is %s but paper account %s was opened with "
+                    "%s and keeps it. Delete the journal to start a new book "
+                    "at the configured balance -- that discards its history.",
+                    self._profile.money(starting_cash),
+                    self._account,
+                    self._profile.money(stored),
+                )
             return
         self._journal.query(
             """INSERT INTO paper_account
