@@ -549,6 +549,13 @@ def render_dashboard(data: DashboardData,
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<!-- The page is rewritten every cycle and always served from the same URL, so a
+     cached copy is a stale account balance presented as the current one. Static
+     hosts send a long max-age by default and a normal reload honours it, which
+     means the reader sees old numbers with a fresh timestamp on them and has no
+     way to tell. Correctness beats the one request this would have saved. -->
+<meta http-equiv="cache-control" content="no-cache, must-revalidate">
+<meta http-equiv="expires" content="0">
 <title>Run {data.run_id} — {_e(data.strategy)} — claude-trader</title>
 <style>{_CSS}</style></head>
 <body><div class="wrap">

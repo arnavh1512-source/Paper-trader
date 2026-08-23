@@ -406,3 +406,12 @@ def test_an_external_broker_leaves_the_figures_alone():
                                                   starting_equity=0.0,
                                                   ending_equity=0.0)))
     assert "no cycle has run while the market was open" not in html
+
+
+def test_the_page_refuses_to_be_served_from_cache():
+    """One URL, rewritten every cycle. A cached copy shows an old balance under
+    a fresh-looking header, and the reader has no way to tell -- which is worse
+    than showing nothing."""
+    html = _render(_data())
+    assert 'http-equiv="cache-control"' in html
+    assert "no-cache" in html
