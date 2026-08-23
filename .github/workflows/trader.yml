@@ -122,6 +122,30 @@ jobs:
           overwrite: true
           if-no-files-found: warn
 
+      # Publish the dashboard so it can be checked from a phone without
+      # downloading an artifact. Skipped silently when VERCEL_TOKEN is not set,
+      # because the bot must keep trading whether or not hosting is configured.
+      #
+      # NOTE: a Vercel deployment URL is public to anyone who has it. This
+      # publishes the paper account's positions, decisions and P&L.
+      - name: Publish dashboard to Vercel
+        if: always()
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          # The secrets context is not readable from a step-level `if:`, so the
+          # guard lives here. No token configured is a normal state, not a
+          # failure -- hosting is optional, trading is not.
+          if [ -z "$VERCEL_TOKEN" ]; then
+            echo "VERCEL_TOKEN not set; skipping publish"; exit 0
+          fi
+          test -s data/dashboard.html || { echo "no dashboard to publish"; exit 0; }
+          mkdir -p public
+          cp data/dashboard.html public/index.html
+          npx --yes vercel@latest deploy public --prod --yes --archive=tgz --token "$VERCEL_TOKEN" || echo "vercel deploy failed; continuing"
+
       - name: Save journal
         if: always()
         uses: actions/cache/save@v4

@@ -159,6 +159,32 @@ needs **no keys at all**.
 Run `python -m claude_trader doctor` to see which ones are missing and whether
 that is fatal for your configuration.
 
+### Running a small book
+
+The market defaults assume a one-lakh account and are actively wrong below
+about a quarter of that, so `STARTING_CASH` re-scales the sizing defaults with
+it. Set the equity and leave the rest alone unless you have a reason:
+
+```bash
+STARTING_CASH=2000
+```
+
+Two things change at that size, both because NSE and BSE trade **whole shares
+only**:
+
+- **Most of the index is out of reach.** With a ₹2,000 book and a 40% position
+  cap, ₹800 does not buy one share of a ₹2,300 stock, so that name can never be
+  traded. `doctor` reports exactly which ones. This is not a bug to route
+  around — it is what a small account is. Since the cap is a *fraction* of
+  equity, names come back into reach on their own as the account grows, which
+  is why the universe is deliberately left at the market default rather than
+  pinned to today's affordable list.
+- **The floor and the ceiling can cross.** At ₹2,000 the stock 20% position cap
+  is ₹400 while the Indian minimum ticket is ₹500, so every order is at once
+  too large and too small and *nothing ever trades* — silently, with no error
+  anywhere. That configuration is now refused at startup rather than discovered
+  three weeks later in an empty journal.
+
 ---
 
 ## Seeing what it did
@@ -175,6 +201,37 @@ the raw order log, and — the section that matters — every decision the strat
 made, including the ones the risk layer refused, with the reason it gave. Holds
 are counted rather than listed. No broker screen will show you the trades that
 never happened; this is the only place they exist.
+
+### Publishing it to Vercel
+
+The scheduled workflow can push the dashboard to Vercel after every cycle, so
+it is checkable from a phone instead of by downloading an artifact. It is off
+until three secrets exist, and the bot trades normally without them.
+
+**A Vercel deployment URL is public to anyone who has it.** Publishing puts the
+paper account's positions, decisions and P&L on the open internet. It is a
+simulated account, but it is still yours — decide deliberately.
+
+1. Create an empty Vercel project (no framework — it serves a static file).
+2. Create a token at **vercel.com → Settings → Tokens**.
+3. Add three repository secrets under **Settings → Secrets and variables →
+   Actions**:
+
+   | Secret | Where to find it |
+   |---|---|
+   | `VERCEL_TOKEN` | the token from step 2 |
+   | `VERCEL_ORG_ID` | Vercel project → Settings → General |
+   | `VERCEL_PROJECT_ID` | same page |
+
+The publish step runs after the journal is written and never fails the run: a
+hosting outage must not look like a trading failure.
+
+To publish by hand instead:
+
+```bash
+python -m claude_trader --market in dashboard --out public/index.html
+npx vercel deploy public --prod
+```
 
 ---
 
