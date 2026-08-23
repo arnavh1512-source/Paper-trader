@@ -25,6 +25,16 @@ on:
         type: choice
         options: [intraday, delivery]
         default: 'intraday'
+      strategy:
+        # `momentum` is the deterministic control group and needs no API key at
+        # all, so it is the way to exercise the whole pipeline -- and to build a
+        # baseline to measure the model against -- before ANTHROPIC_API_KEY
+        # exists. The two keep separate paper accounts, so neither contaminates
+        # the other's journal.
+        description: 'Which strategy decides'
+        type: choice
+        options: [claude, momentum]
+        default: 'claude'
       dry_run:
         description: 'Journal decisions, send no orders'
         type: boolean
@@ -52,7 +62,7 @@ jobs:
       MARKET: ${{ inputs.market || vars.MARKET || 'in' }}
       TRADE_SEGMENT: ${{ inputs.segment || vars.TRADE_SEGMENT || 'intraday' }}
       DRY_RUN: ${{ inputs.dry_run && '1' || vars.DRY_RUN || '0' }}
-      STRATEGY: ${{ vars.STRATEGY || 'claude' }}
+      STRATEGY: ${{ inputs.strategy || vars.STRATEGY || 'claude' }}
 
       # The book, and the sizing that has to be coherent with it. These are
       # passed explicitly because .env is gitignored and never reaches the
@@ -166,8 +176,14 @@ jobs:
           if [ -s data/dashboard.html ]; then
             cp data/dashboard.html public/index.html
           else
-            # Never publish an empty directory over a working page.
-            printf '%s' '<!doctype html><meta charset=utf-8><title>claude-trader</title><p>The last cycle produced no dashboard.' > public/index.html
+            # Never publish an empty directory over a working page, and say why
+            # rather than showing a stale page as if it were current.
+            {
+              printf '%s' '<!doctype html><meta charset=utf-8>'
+              printf '%s' '<title>claude-trader</title>'
+              printf '%s' '<p>The cycle on '"$(date -u +'%Y-%m-%d %H:%M UTC')"' produced no dashboard. '
+              printf '%s' '<a href="'"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"'">See the run log.</a>'
+            } > public/index.html
           fi
 
       - name: Upload Pages artifact
@@ -203,11 +219,14 @@ jobs:
   # worth publishing.
   publish:
     needs: trade
+    # `always()` because a cycle that failed is exactly when you want to look at
+    # the page. The staging step runs under `always()` too and writes a
+    # placeholder naming the run, so there is something honest to publish either
+    # way -- a stale page left up after a failure reads as a working bot.
+    if: always()
     runs-on: ubuntu-latest
-    # Pages has to be switched on by hand once (Settings -> Pages -> Source:
-    # GitHub Actions). Until it is, deploy-pages errors -- and a hosting switch
-    # that has not been flipped yet must not paint a successful trading cycle
-    # red, so the failure is recorded on this job and goes no further.
+    # A hosting failure must not paint the trading cycle's result red -- in
+    # either direction. It is recorded on this job and goes no further.
     continue-on-error: true
     permissions:
       pages: write
