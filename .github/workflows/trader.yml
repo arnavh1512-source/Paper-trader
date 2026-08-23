@@ -65,8 +65,10 @@ jobs:
       # fraction of equity, so expensive names become reachable on their own as
       # the account grows; a pinned list would freeze that shut.
       UNIVERSE: ${{ vars.UNIVERSE || '' }}
-      # Set NEWS_ENABLED as a repository variable to switch headlines on.
-      NEWS_ENABLED: ${{ vars.NEWS_ENABLED || 'false' }}
+      # Headlines are part of the experiment: the question is whether the model uses
+      # them well. Set the NEWS_ENABLED repository variable to 'false' to run the
+      # same book blind and compare. Backtests ignore this either way.
+      NEWS_ENABLED: ${{ vars.NEWS_ENABLED || 'true' }}
       JOURNAL_PATH: data/journal.sqlite3
       ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
       ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}

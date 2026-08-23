@@ -81,6 +81,9 @@ ENV_VARS = (
     "MAX_QUOTE_AGE_SECONDS",
     "MAX_SPREAD_BPS",
     "MAX_COST_RATIO",
+    "NEWS_ENABLED",
+    "NEWS_MAX_HEADLINES",
+    "NEWS_MAX_AGE_HOURS",
 )
 
 IST = timezone(timedelta(minutes=330))

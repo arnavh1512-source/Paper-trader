@@ -197,7 +197,7 @@ row is what makes them distinguishable months later.
 
 ## Testing
 
-969 tests, ~98% statement coverage, all offline.
+972 tests, ~98% statement coverage, all offline.
 
 The suite is organised by the thing being defended rather than by module — test
 names read as claims about behaviour ("a market order is never retried",

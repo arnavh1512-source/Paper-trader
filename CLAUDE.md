@@ -18,7 +18,7 @@ Preserve that framing when changing things.
 ```bash
 pip install -r requirements.txt -r requirements-dev.txt
 
-pytest                                              # 969 tests, all offline
+pytest                                              # 972 tests, all offline
 pytest --cov=claude_trader --cov-report=term-missing
 
 python -m claude_trader --market in doctor

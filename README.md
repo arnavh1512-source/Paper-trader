@@ -285,7 +285,7 @@ pytest
 pytest --cov=claude_trader --cov-report=term-missing
 ```
 
-875 tests, ~98% coverage. `.github/workflows/tests.yml` runs them on 3.11 and
+972 tests, ~98% coverage. `.github/workflows/tests.yml` runs them on 3.11 and
 3.12 with **no secrets in scope** — every test that touches a broker or the
 model goes through a fake, by design.
 
