@@ -37,6 +37,11 @@ concurrency:
 
 permissions:
   contents: read
+  # Publishing the dashboard to GitHub Pages. `pages: write` deploys it and
+  # `id-token: write` is what deploy-pages uses to prove the deployment came
+  # from this workflow run rather than from a token someone copied out.
+  pages: write
+  id-token: write
 
 jobs:
   trade:
@@ -148,6 +153,29 @@ jobs:
           cp data/dashboard.html public/index.html
           npx --yes vercel@latest deploy public --prod --yes --archive=tgz --token "$VERCEL_TOKEN" || echo "vercel deploy failed; continuing"
 
+      # The Pages copy. Vercel needs an account and three secrets; this needs
+      # neither, because the repository already has a token that can publish.
+      # Enable it once under Settings -> Pages -> Source: GitHub Actions.
+      #
+      # NOTE: on a public repository the published page is public. It shows the
+      # paper account's positions, decisions and P&L.
+      - name: Stage dashboard for Pages
+        if: always()
+        run: |
+          mkdir -p public
+          if [ -s data/dashboard.html ]; then
+            cp data/dashboard.html public/index.html
+          else
+            # Never publish an empty directory over a working page.
+            printf '%s' '<!doctype html><meta charset=utf-8><title>claude-trader</title><p>The last cycle produced no dashboard.' > public/index.html
+          fi
+
+      - name: Upload Pages artifact
+        if: always()
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
       - name: Save journal
         if: always()
         uses: actions/cache/save@v4
@@ -167,3 +195,26 @@ jobs:
           retention-days: 30
           overwrite: true
           if-no-files-found: warn
+
+  # A separate job because deploy-pages must own the github-pages environment,
+  # and because a failure to publish must never be able to fail the cycle that
+  # already traded. `needs` without `if: always()` is deliberate the other way
+  # round: if the trade job died before writing a dashboard, there is nothing
+  # worth publishing.
+  publish:
+    needs: trade
+    runs-on: ubuntu-latest
+    # Pages has to be switched on by hand once (Settings -> Pages -> Source:
+    # GitHub Actions). Until it is, deploy-pages errors -- and a hosting switch
+    # that has not been flipped yet must not paint a successful trading cycle
+    # red, so the failure is recorded on this job and goes no further.
+    continue-on-error: true
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

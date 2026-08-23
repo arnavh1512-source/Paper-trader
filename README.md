@@ -202,11 +202,28 @@ made, including the ones the risk layer refused, with the reason it gave. Holds
 are counted rather than listed. No broker screen will show you the trades that
 never happened; this is the only place they exist.
 
-### Publishing it to Vercel
+### Publishing it to GitHub Pages
 
-The scheduled workflow can push the dashboard to Vercel after every cycle, so
-it is checkable from a phone instead of by downloading an artifact. It is off
-until three secrets exist, and the bot trades normally without them.
+The scheduled workflow publishes the dashboard after every cycle, so it is
+checkable from a phone instead of by downloading an artifact. Nothing to sign up
+for and no secret to create -- the repository already has a token that can do it.
+
+Enable it once: **Settings -> Pages -> Build and deployment -> Source: GitHub
+Actions**. The next run publishes to `https://<user>.github.io/<repo>/`, and the
+run summary links it under the `github-pages` environment.
+
+**On a public repository that page is public to anyone who has the link.** It
+shows the paper account's positions, decisions and P&L. It is a simulated
+account, but it is still yours -- make the repository private if that matters,
+and Pages will follow.
+
+Publishing runs as a separate job that depends on the trading job, so a hosting
+failure can never fail a cycle that already traded.
+
+### Publishing it to Vercel instead
+
+Optional, and only worth it if you want the dashboard on a domain you control.
+It is off until three secrets exist, and the bot trades normally without them.
 
 **A Vercel deployment URL is public to anyone who has it.** Publishing puts the
 paper account's positions, decisions and P&L on the open internet. It is a
