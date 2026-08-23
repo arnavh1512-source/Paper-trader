@@ -54,6 +54,12 @@ class DashboardData:
     dry_run: bool = False
     holds: int = 0
     tz: object = timezone.utc
+    # The paper account itself, when there is one. `performance` is derived from
+    # equity samples, and a cycle that finds the market closed records none --
+    # so on a fresh journal every figure it produces is 0.0, and a dashboard
+    # that renders that says the account is empty when it is merely untouched.
+    # Defaults to None so a caller that has no book renders the same as before.
+    book: Mapping | None = None
 
 
 # --------------------------------------------------------------- collection
@@ -108,6 +114,7 @@ def collect(journal, run_id: int, config, performance: Performance,
         benchmark=config.benchmark,
         performance=performance,
         equity=tuple(dict(r) for r in journal.equity_curve(run_id)),
+        book=_book(journal, row["strategy"], config.market),
         positions=tuple(dict(r) for r in positions),
         round_trips=tuple(build_round_trips(ascending)),
         orders=tuple(dict(o) for o in orders),
@@ -117,6 +124,24 @@ def collect(journal, run_id: int, config, performance: Performance,
         calibration=calibration,
         dry_run=dry,
     )
+
+
+def _book(journal, strategy: str, market: str) -> Mapping | None:
+    """The paper broker's account row, or None when the broker is external.
+
+    ``market`` is ``config.market``, which ``AppConfig`` lowercases and validates
+    against ``MARKETS`` -- so it is the same string as ``profile.key``, which is
+    what the paper broker builds its account name from.
+
+    Alpaca keeps its paper state server-side, so on the US path there is no row
+    and the caller has nothing to fall back to -- which is correct: the
+    dashboard must not invent a balance it cannot read.
+    """
+    rows = journal.query(
+        "SELECT cash, starting_cash FROM paper_account WHERE account = ?",
+        (f"{strategy}:{market}",),
+    )
+    return dict(rows[0]) if rows else None
 
 
 # ------------------------------------------------------------------ helpers
@@ -227,9 +252,22 @@ def _chart(data: DashboardData) -> str:
 def _headline(data: DashboardData, money: Callable[[float], str]) -> str:
     p = data.performance
     star = " *" if p.annualised_extrapolated else ""
+
+    # With no equity samples the performance figures are all zero by
+    # construction. Cash is still knowable, and with no samples there are no
+    # positions either, so cash *is* the equity -- report that rather than a
+    # balance of nothing.
+    if not data.equity and data.book is not None:
+        ending, starting = float(data.book["cash"]), float(data.book["starting_cash"])
+        equity_card = _card("Equity", money(ending), "flat",
+                            f"from {money(starting)} — no cycle has run "
+                            "while the market was open")
+    else:
+        equity_card = _card("Equity", money(p.ending_equity), _tone(p.total_return),
+                            f"from {money(p.starting_equity)}")
+
     cards = [
-        _card("Equity", money(p.ending_equity), _tone(p.total_return),
-              f"from {money(p.starting_equity)}"),
+        equity_card,
         _card("Total return", _pct(p.total_return), _tone(p.total_return)),
         _card(f"vs {data.benchmark}", _pct(p.excess_return),
               _tone(p.excess_return),

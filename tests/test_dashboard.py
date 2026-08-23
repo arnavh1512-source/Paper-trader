@@ -364,3 +364,45 @@ def test_collect_reads_the_open_book_and_the_equity_curve(journal):
     assert [p["symbol"] for p in data.positions] == ["INFY"]
     assert len(data.equity) == 1
     assert data.strategy == "momentum"
+
+
+# --------------------------------------------------- equity before first cycle
+def test_an_untouched_account_reports_its_cash_not_a_balance_of_zero():
+    """Every performance figure is derived from equity samples, and a cycle that
+    finds the market closed records none. The first live run of a fresh journal
+    is therefore an all-zeros ``Performance`` -- and rendering that verbatim
+    tells the owner of a Rs 2,000 account that they have nothing, which is both
+    wrong and alarming. The cash balance is knowable regardless.
+    """
+    html = _render(_data(
+        equity=(),
+        book={"cash": 2000.0, "starting_cash": 2000.0},
+        performance=_performance(samples=0, starting_equity=0.0,
+                                 ending_equity=0.0, total_return=0.0),
+    ))
+    assert "Rs 2,000.00" in html
+    assert "no cycle has run while the market was open" in html
+
+
+def test_the_stated_balance_is_the_measured_one_once_a_cycle_has_run():
+    """The fallback is for the gap before the first sample, not a second source
+    of truth. The moment the curve exists it wins, even though the account row
+    is still there and still says something different."""
+    html = _render(_data(
+        equity=({"ts": "2025-01-01T04:00:00+00:00", "equity": 104_000.0,
+                 "benchmark_price": 100.0},),
+        book={"cash": 2000.0, "starting_cash": 2000.0},
+    ))
+    assert "Rs 104,000.00" in html
+    assert "Rs 2,000.00" not in html
+
+
+def test_an_external_broker_leaves_the_figures_alone():
+    """Alpaca keeps its paper state server-side, so there is no account row to
+    read. The dashboard must show what it measured rather than invent a
+    balance it has no way to know."""
+    html = _render(_data(equity=(), book=None,
+                         performance=_performance(samples=0,
+                                                  starting_equity=0.0,
+                                                  ending_equity=0.0)))
+    assert "no cycle has run while the market was open" not in html
