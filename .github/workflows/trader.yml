@@ -16,15 +16,14 @@ on:
     # `claude` strategy, roughly 3.5x the API bill. Same experiment, same
     # universe, same risk gate -- and the cadence applies identically to both
     # strategies, so it does not contaminate the comparison.
-    - cron: '0 4-9 * * 1-5'     # 09:30-14:30 IST, on the half hour
-    # Square-off runs at close - SQUARE_OFF_MINUTES (15:15 IST). Hourly ticks
-    # step straight over that window: 14:30 is too early to trigger it and the
-    # next one would land on the bell, where GitHub's habitual few minutes of
-    # cron drift means the fill happens after close or not at all. Intraday
-    # positions would then carry overnight while the intraday cost model
-    # under-charged them. This tick exists to land inside the window.
-    - cron: '45 9 * * 1-5'      # 15:15 IST, square-off
-    # - cron: '0 14-20 * * 1-5'   # uncomment for US, comment out the NSE lines
+    #
+    # Nominal times below are what cron asks for. GitHub delivers late -- the
+    # first day of hourly running drifted 34, 47 and 54 minutes on consecutive
+    # ticks. Treat 0-60 minutes of lateness as normal and design for the whole
+    # range; anything that has to happen inside a narrow window cannot be
+    # expressed as a cron time here. tests/test_schedule.py pins this.
+    - cron: '0 4-9 * * 1-5'     # nominal 09:30-14:30 IST; lands 09:30-15:30
+    # - cron: '0 14-20 * * 1-5'   # uncomment for US, comment out the NSE line
   workflow_dispatch:
     inputs:
       market:
@@ -74,7 +73,17 @@ jobs:
       MARKET: ${{ inputs.market || vars.MARKET || 'in' }}
       TRADE_SEGMENT: ${{ inputs.segment || vars.TRADE_SEGMENT || 'intraday' }}
       DRY_RUN: ${{ inputs.dry_run && '1' || vars.DRY_RUN || '0' }}
-      STRATEGY: ${{ inputs.strategy || vars.STRATEGY || 'claude' }}
+      # Defaults to the keyless control, not to `claude`. Every scheduled run
+      # today died on exit 2 -- ConfigError, no ANTHROPIC_API_KEY -- because a
+      # schedule supplies no inputs and the default assumed a key that does not
+      # exist yet. A default that only works once a secret is configured is a
+      # default that fails silently until someone reads a log.
+      #
+      # This is a declared default, not a runtime fallback: the bot still
+      # refuses to quietly swap strategies mid-run, because that would mean
+      # journalling one strategy's decisions under another's name. Set the
+      # STRATEGY repository variable to 'claude' when the key exists.
+      STRATEGY: ${{ inputs.strategy || vars.STRATEGY || 'momentum' }}
 
       # The book, and the sizing that has to be coherent with it. These are
       # passed explicitly because .env is gitignored and never reaches the
@@ -90,6 +99,16 @@ jobs:
       MAX_NOTIONAL_PER_TRADE: ${{ vars.MAX_NOTIONAL_PER_TRADE || '' }}
       MAX_POSITION_PCT: ${{ vars.MAX_POSITION_PCT || '0.40' }}
       MIN_TRADE_NOTIONAL: ${{ vars.MIN_TRADE_NOTIONAL || '' }}
+      # Square-off must be reachable by the LAST tick of the day under the full
+      # drift range, because there is no tick after it to catch a miss. The
+      # 14:30 tick lands anywhere in 14:30-15:30 IST, so the cut-off has to sit
+      # at or before 14:30 -- that is 60 minutes before the 15:30 close.
+      #
+      # A tighter window is not "more trading time", it is a coin flip on
+      # whether intraday positions get closed at all. Missing it carries them
+      # overnight while the intraday cost model still bills intraday rates,
+      # which corrupts the P&L the whole experiment is measuring.
+      SQUARE_OFF_MINUTES: ${{ vars.SQUARE_OFF_MINUTES || '60' }}
       MAX_POSITIONS: ${{ vars.MAX_POSITIONS || '3' }}
       MAX_SECTOR_POSITIONS: ${{ vars.MAX_SECTOR_POSITIONS || '1' }}
       # Deliberately the market's full default universe. The position cap is a

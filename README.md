@@ -306,13 +306,25 @@ padded — the bot checks the calendar itself and no-ops outside the session.
 
 ### Cadence and what it costs
 
-Seven ticks a trading day: hourly from 09:30 to 14:30 IST, plus one at 15:15 IST
-that exists to land inside the square-off window. Hourly ticks step straight over
-that window — 14:30 is too early to trigger it and the next would land on the
-bell, where cron drift means the fill happens after close or not at all, leaving
-intraday positions overnight while the intraday cost model under-charges them.
-The extra tick tolerates about fifteen minutes of drift and still fills before
-the close.
+Six ticks a trading day, nominally hourly from 09:30 to 14:30 IST.
+
+**GitHub does not run scheduled workflows on time.** The first day of hourly
+running drifted 34, 47 and 54 minutes on consecutive ticks. That is enough to
+push a tick past the closing bell, so the schedule is designed for the whole
+0–60 minute range rather than for the times cron is asked for.
+
+The consequence is that **square-off has to be reachable by the last tick of the
+day under any of that drift**, because nothing runs after it to catch a miss.
+The 14:30 tick lands anywhere in 14:30–15:30 IST, so `SQUARE_OFF_MINUTES` is 60
+— the cut-off sits at 14:30 and every possible arrival triggers it. A tighter
+window is not more trading time; it is a coin flip on whether intraday positions
+get closed at all, and a miss carries them overnight while the intraday cost
+model still bills intraday rates. [tests/test_schedule.py](tests/test_schedule.py)
+reads the real workflow file and asserts this across the full drift range.
+
+If a run is dropped entirely — GitHub does that under load — the position is
+caught the next session by `MAX_HOLDING_BARS` and the hard stop, not by
+square-off. Cron cannot promise better than that.
 
 `momentum` costs nothing to run. `claude` makes at most ~5 API calls per cycle
 (one picker call plus one per candidate), so cadence is the dominant term in the
@@ -320,7 +332,7 @@ bill:
 
 | Cadence | Cycles/day | Sonnet 5, per month |
 |---|---|---|
-| Hourly (current) | 7 | ~$4–6 |
+| Hourly (current) | 6 | ~$4–5 |
 | Every 15 minutes | 25 | ~$13–20 |
 
 Rates move — check [Anthropic's pricing](https://claude.com/pricing#api) rather
@@ -344,7 +356,7 @@ pytest
 pytest --cov=claude_trader --cov-report=term-missing
 ```
 
-994 tests, ~98% coverage. `.github/workflows/tests.yml` runs them on 3.11 and
+998 tests, ~98% coverage. `.github/workflows/tests.yml` runs them on 3.11 and
 3.12 with **no secrets in scope** — every test that touches a broker or the
 model goes through a fake, by design.
 
