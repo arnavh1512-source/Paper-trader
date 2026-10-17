@@ -81,8 +81,8 @@ def test_an_unknown_market_is_rejected_at_the_parser():
         parse("--market", "uk", "trade")
 
 
-@pytest.mark.parametrize("strategy", ["claude", "momentum"])
-def test_both_strategies_are_selectable(strategy):
+@pytest.mark.parametrize("strategy", ["claude", "momentum", "momentum_plus"])
+def test_every_strategy_is_selectable(strategy):
     assert parse("backtest", "--strategy", strategy).strategy == strategy
 
 

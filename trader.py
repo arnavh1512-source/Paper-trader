@@ -5,8 +5,9 @@ This file used to *be* the bot: a single script that asked Claude what to buy
 and bought it. It is now a launcher, and everything it used to do lives in
 ``claude_trader/`` where each piece can be tested and measured on its own.
 
-Kept as a top-level script because the GitHub Actions workflow calls it by
-name, and because ``python trader.py`` is the shortest thing to type.
+Kept as a top-level script because ``python trader.py`` is the shortest thing
+to type. The scheduled workflow calls the module instead, because it runs each
+strategy with its own ``--strategy`` flag.
 
 Equivalent:  python -m claude_trader trade
 """

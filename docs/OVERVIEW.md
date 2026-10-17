@@ -210,7 +210,10 @@ the feature.
 **A free control group.** `--strategy momentum` runs the identical cycle, gate,
 broker and reporting with a deterministic rule and zero API cost. Without it,
 "was the model worth it?" is unanswerable. Reports compare against it *and*
-against buy-and-hold.
+against buy-and-hold. `--strategy momentum_plus` is a second keyless arm: the
+same rule with fixed textbook filters stacked on top (breadth, opening window,
+confirmation, cost floor, volatility-scaled ranking), so the journal can show
+whether filters alone move the control before anyone credits the model.
 
 **Reports that flag their own weakness.** Annualised figures drawn from short
 samples get a `*` and a footnote, because six weeks extrapolated to a year is a
@@ -237,7 +240,7 @@ ever touches a feed.
 
 ## 10. Tests
 
-**879 tests, 98% coverage, entirely offline.**
+**1072 tests, 98% coverage, entirely offline.**
 
 Every broker, feed and model call goes through a fake. CI runs on Python 3.11
 and 3.12 with **no secrets in scope** — a test that needs a real key is a test
@@ -260,10 +263,15 @@ Per-module: `config.py`, `models.py`, `journal/store.py`, `alpaca.py`,
 
 ## 11. Operations
 
-- `.github/workflows/trader.yml` — one cycle per schedule tick. The NSE cron is
-  active by default, with the US block commented directly beneath it. Windows
-  are padded because GitHub's scheduler fires late routinely; the bot checks the
-  calendar itself and no-ops outside the session.
+- `.github/workflows/trader.yml` — one job per trading day. Three staggered,
+  off-the-hour crons only start it, because GitHub's scheduler fires late and
+  drops runs; a shell loop inside the job trades on arrival and then hourly at
+  HH:05 UTC until the close or a 320-minute budget, so the last slot always lands
+  in the square-off window. On NSE each slot runs `momentum`, then
+  `momentum_plus`, then `claude` (skipped without a key), on separate paper
+  accounts; US keeps a single `STRATEGY` because Alpaca has one
+  paper account. The journal is saved and the dashboard published once, after
+  the loop. The US cron block is commented directly beneath the NSE one.
 - `.github/workflows/tests.yml` — the suite on 3.11 and 3.12,
   `--cov-fail-under=90`, plus an offline backtest smoke test.
 - The journal is cached **and** archived as an artifact between runs, because

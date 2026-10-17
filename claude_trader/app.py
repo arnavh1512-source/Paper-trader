@@ -25,6 +25,7 @@ from .llm.client import ClaudeClient
 from .risk.engine import RiskEngine
 from .strategies.claude_strategy import ClaudeStrategy
 from .strategies.momentum import MomentumStrategy
+from .strategies.momentum_plus import MomentumPlusStrategy
 
 log = logging.getLogger(__name__)
 
@@ -69,12 +70,21 @@ def build_news(config: AppConfig, *, live: bool):
 def build_strategy(config: AppConfig, journal: Journal | None = None, *,
                    live: bool = False):
     """Pick the decision maker. ``momentum`` costs nothing and is the control
-    group; ``claude`` is the thing being evaluated against it."""
+    group; ``claude`` is the thing being evaluated against it. ``momentum_plus``
+    is a keyless exploratory arm: the control with fixed filters on top."""
     if config.strategy == "momentum":
         return MomentumStrategy(config.universe)
+    if config.strategy == "momentum_plus":
+        return MomentumPlusStrategy(
+            config.universe,
+            profile=config.profile,
+            costs=build_cost_model(config.market, config.segment),
+            position_pct=config.risk.max_position_pct,
+        )
     if config.strategy != "claude":
         raise ValueError(
-            f"unknown strategy {config.strategy!r}; expected 'claude' or 'momentum'"
+            f"unknown strategy {config.strategy!r}; "
+            "expected 'claude', 'momentum' or 'momentum_plus'"
         )
     # The journal doubles as the response cache: a re-run of the same prompt
     # is free, which is what makes iterating on a backtest affordable.

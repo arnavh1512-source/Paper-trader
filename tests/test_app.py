@@ -26,6 +26,7 @@ from claude_trader.models import Account, Position
 from claude_trader.risk.engine import RiskState
 from claude_trader.strategies.claude_strategy import ClaudeStrategy
 from claude_trader.strategies.momentum import MomentumStrategy
+from claude_trader.strategies.momentum_plus import MomentumPlusStrategy
 
 NOW = datetime(2026, 3, 2, 10, 0, tzinfo=timezone.utc)
 
@@ -82,6 +83,17 @@ def test_momentum_is_the_free_control_group():
     assert isinstance(strategy, MomentumStrategy)
 
 
+def test_momentum_plus_needs_no_key_and_prices_costs_at_the_book_s_ticket():
+    """The cost floor must use this market's charges and the same position cap
+    the risk layer enforces, or it filters at a ticket size that never trades."""
+    config = AppConfig(market="in", strategy="momentum_plus")
+    strategy = app.build_strategy(config)
+    assert isinstance(strategy, MomentumPlusStrategy)
+    assert strategy._profile is config.profile
+    assert strategy._position_pct == config.risk.max_position_pct
+    assert type(strategy._costs).__name__ == "IndianEquityCosts"
+
+
 def test_the_claude_strategy_is_wired_to_the_model(journal):
     strategy = app.build_strategy(
         AppConfig(market="in", strategy="claude", llm=LLMConfig(api_key="key")),
@@ -102,7 +114,7 @@ def test_the_journal_doubles_as_the_prompt_cache(journal):
 def test_an_unknown_strategy_names_the_ones_that_exist():
     """AppConfig rejects this too, but the composition root is reachable from
     code that never went through validation."""
-    with pytest.raises(ValueError, match="expected 'claude' or 'momentum'"):
+    with pytest.raises(ValueError, match="expected 'claude', 'momentum' or 'momentum_plus'"):
         app.build_strategy(SimpleNamespace(strategy="astrology"))
 
 

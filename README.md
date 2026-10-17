@@ -82,7 +82,7 @@ python -m claude_trader --market in dashboard --open
 
 | Command | What it is for |
 |---|---|
-| `trade` | Run one live paper-trading cycle. This is what the scheduler calls. |
+| `trade` | Run one live paper-trading cycle. The scheduled job calls it once per strategy per hour. |
 | `backtest` | Replay the decision path over history (`--synthetic` for offline). |
 | `calibrate` | Resolve past decisions against what actually happened and score the confidence gate. |
 | `report` | Render a markdown report for a journalled run, with a buy-and-hold benchmark. |
@@ -103,6 +103,22 @@ what actually happened afterwards. If "confidence 9" is not measurably better
 than "confidence 6", the confidence number is noise and the gate that reads it
 is decoration. The original version of this bot had a hard-coded
 `confidence >= 7` threshold and no way to know whether it meant anything.
+
+---
+
+## The strategies
+
+| Strategy | Key needed | What it is |
+|---|---|---|
+| `momentum` | none | The control. A crude, deterministic trend rule, **frozen** while the experiment scores Claude against it. |
+| `momentum_plus` | none | The control with fixed, untuned filters on top: market breadth, a quiet first fifteen minutes, 20-bar and volume confirmation, a cost floor, and volatility-scaled ranking. Exits on a broken trend and leaves winners to the trailing stop. |
+| `claude` | `ANTHROPIC_API_KEY` | The model picks and decides, through the same gate and broker. |
+
+`momentum_plus` only ever buys a subset of what the control would, so the two
+stay comparable. Each filter is a textbook idea stated before any data was
+looked at — a hypothesis under test, not a source of returns. It is an
+exploratory arm: [docs/EXPERIMENT.md](docs/EXPERIMENT.md) keeps the primary
+question as Claude against `momentum`, and says how `momentum_plus` is read.
 
 ---
 
@@ -136,7 +152,7 @@ most:
 |---|---|---|
 | `MARKET` | `in` | `in` or `us` |
 | `TRADE_SEGMENT` | `intraday` | NSE only: `intraday` or `delivery` |
-| `STRATEGY` | `claude` | `claude` or `momentum` (the free control group) |
+| `STRATEGY` | `momentum` | `momentum` (the control), `momentum_plus` or `claude` |
 | `CLAUDE_MODEL` | `claude-sonnet-5` | Which Claude decides; `claude-opus-5` for deeper reasoning |
 | `DRY_RUN` | `0` | Decide and journal, send no orders |
 | `JOURNAL_PATH` | `data/journal.sqlite3` | The account lives here |
@@ -154,7 +170,7 @@ most:
 Secrets — `ANTHROPIC_API_KEY`, and `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` for
 the US path — come from the environment or GitHub Actions secrets. They are
 never read from a file in the repo. The India path with `--strategy momentum`
-needs **no keys at all**.
+(or `momentum_plus`) needs **no keys at all**.
 
 Run `python -m claude_trader doctor` to see which ones are missing and whether
 that is fatal for your configuration.
@@ -215,9 +231,10 @@ never happened; this is the only place they exist.
 
 ### Publishing it to GitHub Pages
 
-The scheduled workflow publishes the dashboard after every cycle, so it is
-checkable from a phone instead of by downloading an artifact. Nothing to sign up
-for and no secret to create -- the repository already has a token that can do it.
+The scheduled workflow publishes the dashboard once per trading day, after the
+day's loop, so it is checkable from a phone instead of by downloading an
+artifact. Nothing to sign up for and no secret to create -- the repository
+already has a token that can do it.
 
 Enable it once: **Settings -> Pages -> Build and deployment -> Source: GitHub
 Actions**. The next run publishes to `https://<user>.github.io/<repo>/`, and the
@@ -230,36 +247,6 @@ and Pages will follow.
 
 Publishing runs as a separate job that depends on the trading job, so a hosting
 failure can never fail a cycle that already traded.
-
-### Publishing it to Vercel instead
-
-Optional, and only worth it if you want the dashboard on a domain you control.
-It is off until three secrets exist, and the bot trades normally without them.
-
-**A Vercel deployment URL is public to anyone who has it.** Publishing puts the
-paper account's positions, decisions and P&L on the open internet. It is a
-simulated account, but it is still yours — decide deliberately.
-
-1. Create an empty Vercel project (no framework — it serves a static file).
-2. Create a token at **vercel.com → Settings → Tokens**.
-3. Add three repository secrets under **Settings → Secrets and variables →
-   Actions**:
-
-   | Secret | Where to find it |
-   |---|---|
-   | `VERCEL_TOKEN` | the token from step 2 |
-   | `VERCEL_ORG_ID` | Vercel project → Settings → General |
-   | `VERCEL_PROJECT_ID` | same page |
-
-The publish step runs after the journal is written and never fails the run: a
-hosting outage must not look like a trading failure.
-
-To publish by hand instead:
-
-```bash
-python -m claude_trader --market in dashboard --out public/index.html
-npx vercel deploy public --prod
-```
 
 ---
 
@@ -291,9 +278,10 @@ what the model was reading when it made the call.
 
 ## Running on GitHub Actions
 
-`.github/workflows/trader.yml` runs one cycle per schedule tick. Set the three
-secrets under **Settings → Secrets and variables → Actions**, and set `MARKET`
-and `STRATEGY` as repository *variables*.
+`.github/workflows/trader.yml` runs one job per trading day that loops hourly
+inside itself until the close. Set the three secrets under **Settings → Secrets
+and variables → Actions**, and set `MARKET` and `STRATEGY` as repository
+*variables*.
 
 The journal is cached between runs and uploaded as an artifact, because **the
 journal is the account**: positions, cash, the drawdown-breaker state and the
@@ -301,42 +289,61 @@ model response cache all live in it. Losing it resets the balance and silently
 clears a halt.
 
 The cron block for NSE is active by default; the US block is commented out
-directly beneath it. GitHub's scheduler fires late routinely, so the windows are
-padded — the bot checks the calendar itself and no-ops outside the session.
+directly beneath it, and needs `SESSION_CLOSE_UTC` changed to the NYSE close.
 
 ### Cadence and what it costs
 
-Six ticks a trading day, nominally hourly from 09:30 to 14:30 IST.
+**GitHub does not run scheduled workflows on time.** Hourly crons arrived 34–54
+minutes late on the first day, and later hours late with whole ticks dropped. A
+cadence written as cron times was a cadence nobody controlled, so cron no longer
+carries it.
 
-**GitHub does not run scheduled workflows on time.** The first day of hourly
-running drifted 34, 47 and 54 minutes on consecutive ticks. That is enough to
-push a tick past the closing bell, so the schedule is designed for the whole
-0–60 minute range rather than for the times cron is asked for.
+Instead, three triggers (09:17, 10:53 and 12:47 IST — off the hour, when GitHub
+is least loaded, and none before the open) only *start* the day's job. The first
+to arrive runs a cycle immediately, then one at HH:05 UTC (HH:35 IST) every hour,
+and stops once the next slot would fall after the 15:30 close or past a 320-minute
+budget that keeps the job inside GitHub's 6-hour ceiling. The other triggers queue
+behind it in the `paper-trader` concurrency group and no-op once the session is
+over, so a late or dropped trigger is covered by the next one.
 
-The consequence is that **square-off has to be reachable by the last tick of the
-day under any of that drift**, because nothing runs after it to catch a miss.
-The 14:30 tick lands anywhere in 14:30–15:30 IST, so `SQUARE_OFF_MINUTES` is 60
-— the cut-off sits at 14:30 and every possible arrival triggers it. A tighter
-window is not more trading time; it is a coin flip on whether intraday positions
-get closed at all, and a miss carries them overnight while the intraday cost
-model still bills intraday rates. [tests/test_schedule.py](tests/test_schedule.py)
-reads the real workflow file and asserts this across the full drift range.
+From the earliest trigger that is seven cycles a day: on arrival, then 09:35
+through 14:35 IST. The last slot sits inside the square-off window
+(`SQUARE_OFF_MINUTES` is 60, so the cut-off is 14:30), and **square-off has to be
+reachable by the last cycle**, because nothing runs after it to catch a miss — a
+miss carries intraday positions overnight while the intraday cost model still
+bills intraday rates. [tests/test_schedule.py](tests/test_schedule.py) runs the
+real loop out of the workflow file under a fake clock, from every trigger and
+from late arrivals, and asserts it squares off and ends in time.
 
-If a run is dropped entirely — GitHub does that under load — the position is
+On NSE every hourly slot trades **every strategy**: `momentum` first (the
+control), then `momentum_plus`, then `claude`, each on its own paper account in
+the same journal. `claude` is skipped with a log line when `ANTHROPIC_API_KEY`
+is unset, so with no key the project runs both keyless arms and bills nothing.
+A `claude` failure never costs another arm its cycle, a later slot, or the
+journal save. US scheduled runs
+keep the single `STRATEGY`, because Alpaca has one server-side paper account and
+two strategies there would trade the same book. A manual **Run workflow** is one
+cycle of the strategy you pick.
+
+The journal and the dashboard are saved once per job, after the loop. A runner
+that dies mid-day loses that day's journal writes; the next run starts from the
+morning's state.
+
+If every trigger is dropped — GitHub does that under load — open positions are
 caught the next session by `MAX_HOLDING_BARS` and the hard stop, not by
 square-off. Cron cannot promise better than that.
 
-`momentum` costs nothing to run. `claude` makes at most ~5 API calls per cycle
+`momentum` and `momentum_plus` cost nothing to run. `claude` makes at most ~5 API calls per cycle
 (one picker call plus one per candidate), so cadence is the dominant term in the
 bill:
 
 | Cadence | Cycles/day | Sonnet 5, per month |
 |---|---|---|
-| Hourly (current) | 6 | ~$4–5 |
+| Hourly (current) | 7 | ~$5–6 |
 | Every 15 minutes | 25 | ~$13–20 |
 
 Rates move — check [Anthropic's pricing](https://claude.com/pricing#api) rather
-than trusting this table. The cadence applies identically to both strategies, so
+than trusting this table. The cadence applies identically to every strategy, so
 changing it does not contaminate the comparison between them.
 
 `MAX_API_CALLS` sets a hard ceiling on billable calls in one process; it is
@@ -356,7 +363,7 @@ pytest
 pytest --cov=claude_trader --cov-report=term-missing
 ```
 
-998 tests, ~98% coverage. `.github/workflows/tests.yml` runs them on 3.11 and
+1072 tests, ~98% coverage. `.github/workflows/tests.yml` runs them on 3.11 and
 3.12 with **no secrets in scope** — every test that touches a broker or the
 model goes through a fake, by design.
 

@@ -1,9 +1,8 @@
 name: Paper trader
 
-# One cycle per schedule tick. The bot decides for itself whether the market is
-# open, so a few ticks outside the session are harmless no-ops -- GitHub's cron
-# is best-effort and routinely fires several minutes late, which is exactly why
-# the window is padded rather than pinned to the bell.
+# One job per trading day, looping hourly inside itself. The bot decides for
+# itself whether the market is open, so a cycle outside the session (or on a
+# holiday) is a harmless no-op.
 #
 # NSE runs 09:15-15:30 IST = 03:45-10:00 UTC.
 # NYSE runs 09:30-16:00 ET  = 13:30-20:00 UTC (14:30-21:00 in winter).
@@ -11,19 +10,29 @@ name: Paper trader
 
 on:
   schedule:
-    # Hourly, not every 15 minutes. A 3-position momentum book re-decides the
-    # same thing four times an hour; the extra cycles bought noise and, on the
-    # `claude` strategy, roughly 3.5x the API bill. Same experiment, same
-    # universe, same risk gate -- and the cadence applies identically to both
-    # strategies, so it does not contaminate the comparison.
+    # Cron here only has to START the day's job; the hourly cadence lives in
+    # the "Trade the session" loop below. GitHub's scheduler is not a clock:
+    # hourly crons arrived 34-54 minutes late on day one, and later hours
+    # late with whole ticks dropped, so a cadence expressed as cron times was
+    # a cadence nobody controlled.
     #
-    # Nominal times below are what cron asks for. GitHub delivers late -- the
-    # first day of hourly running drifted 34, 47 and 54 minutes on consecutive
-    # ticks. Treat 0-60 minutes of lateness as normal and design for the whole
-    # range; anything that has to happen inside a narrow window cannot be
-    # expressed as a cron time here. tests/test_schedule.py pins this.
-    - cron: '0 4-9 * * 1-5'     # nominal 09:30-14:30 IST; lands 09:30-15:30
-    # - cron: '0 14-20 * * 1-5'   # uncomment for US, comment out the NSE line
+    # Hourly, not every 15 minutes: a 3-position momentum book re-decides the
+    # same thing four times an hour, and on `claude` that is ~3.5x the bill.
+    # The cadence applies identically to every arm, so it does not
+    # contaminate the comparison.
+    #
+    # Three triggers, off the hour (the top of the hour is when GitHub is most
+    # loaded and most likely to delay or drop), none before the 03:45 UTC open.
+    # Whichever arrives first trades the rest of the session. The concurrency
+    # group queues the others behind it -- a newer pending run replaces an
+    # older one -- so a late or dropped trigger is covered by the next, and a
+    # queued run that starts after the close is a cheap no-op.
+    - cron: '47 3 * * 1-5'      # 09:17 IST
+    - cron: '23 5 * * 1-5'      # 10:53 IST
+    - cron: '17 7 * * 1-5'      # 12:47 IST
+    # US: uncomment below, comment out the NSE lines, and set SESSION_CLOSE_UTC
+    # to the NYSE close (20:00, or 21:00 in winter).
+    # - cron: '47 13 * * 1-5'
   workflow_dispatch:
     inputs:
       market:
@@ -37,15 +46,15 @@ on:
         options: [intraday, delivery]
         default: 'intraday'
       strategy:
-        # `momentum` is the deterministic control group and needs no API key at
-        # all, so it is the way to exercise the whole pipeline -- and to build a
-        # baseline to measure the model against -- before ANTHROPIC_API_KEY
-        # exists. The two keep separate paper accounts, so neither contaminates
-        # the other's journal.
-        description: 'Which strategy decides'
+        # A manual run is ONE cycle of ONE strategy -- the way to poke the
+        # pipeline by hand. Scheduled NSE runs trade every arm every hour.
+        # `momentum` is the deterministic control group and `momentum_plus`
+        # the filtered rule; neither needs an API key. Each keeps its own
+        # paper account, so no arm contaminates another's journal.
+        description: 'Which strategy decides (manual run: one cycle)'
         type: choice
-        options: [claude, momentum]
-        default: 'claude'
+        options: [momentum, momentum_plus, claude]
+        default: 'momentum'
       dry_run:
         description: 'Journal decisions, send no orders'
         type: boolean
@@ -67,12 +76,18 @@ permissions:
 jobs:
   trade:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    # The 360-minute ceiling on GitHub-hosted runners, less a margin. The loop
+    # step carries its own tighter timeout, so a hang inside it still leaves
+    # time to save the journal. tests/test_schedule.py pins how these fit.
+    timeout-minutes: 355
 
     env:
       MARKET: ${{ inputs.market || vars.MARKET || 'in' }}
       TRADE_SEGMENT: ${{ inputs.segment || vars.TRADE_SEGMENT || 'intraday' }}
       DRY_RUN: ${{ inputs.dry_run && '1' || vars.DRY_RUN || '0' }}
+      # The strategy for a MANUAL run, and for scheduled US runs. Scheduled NSE
+      # runs ignore it and trade every arm -- see "Trade the session".
+      #
       # Defaults to the keyless control, not to `claude`. Every scheduled run
       # today died on exit 2 -- ConfigError, no ANTHROPIC_API_KEY -- because a
       # schedule supplies no inputs and the default assumed a key that does not
@@ -99,10 +114,11 @@ jobs:
       MAX_NOTIONAL_PER_TRADE: ${{ vars.MAX_NOTIONAL_PER_TRADE || '' }}
       MAX_POSITION_PCT: ${{ vars.MAX_POSITION_PCT || '0.40' }}
       MIN_TRADE_NOTIONAL: ${{ vars.MIN_TRADE_NOTIONAL || '' }}
-      # Square-off must be reachable by the LAST tick of the day under the full
-      # drift range, because there is no tick after it to catch a miss. The
-      # 14:30 tick lands anywhere in 14:30-15:30 IST, so the cut-off has to sit
-      # at or before 14:30 -- that is 60 minutes before the 15:30 close.
+      # Square-off must be reachable by the LAST cycle of the day, because
+      # nothing runs after it to catch a miss. The loop's last slot is
+      # 09:05 UTC (14:35 IST), so the cut-off has to sit at or before it: 60
+      # minutes before the 15:30 close puts it at 14:30, with the slot inside
+      # the window and every arm's cycle landing well before the bell.
       #
       # A tighter window is not "more trading time", it is a coin flip on
       # whether intraday positions get closed at all. Missing it carries them
@@ -127,6 +143,25 @@ jobs:
       # frontier model beats a twenty-line SMA rule; a smaller model losing
       # would not distinguish a failed idea from an under-powered one.
       CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL || 'claude-sonnet-5' }}
+      # The loop's clock. Structural, not tuning knobs, so they are literals
+      # rather than repository variables: tests/test_schedule.py runs the loop
+      # with these exact values and asserts it squares off and ends in time.
+      #
+      # SESSION_CLOSE_UTC is the NSE close (markets/india.py) in UTC. IST has
+      # no DST, so a constant is exact; the test checks it against the profile.
+      SESSION_CLOSE_UTC: '10:00'
+      # Cycles run at HH:05 UTC (HH:35 IST), plus once immediately on start.
+      CYCLE_SLOT_MINUTE: '5'
+      # No new iteration starts after this many minutes; the arms of one that
+      # has started run to completion. 320 keeps the job under the 6h ceiling
+      # and still reaches the 09:05 square-off slot from a job started by the
+      # earliest cron.
+      LOOP_BUDGET_MINUTES: '320'
+      # A cycle normally takes about a minute. A hung feed or model call is
+      # killed here rather than eating the rest of the day's loop. Three arms
+      # all hung in the last iteration overrun the budget by 3 x 8 = 24
+      # minutes, which 320 + 24 = 344 keeps inside the 345-minute step.
+      CYCLE_TIMEOUT_MINUTES: '8'
       # Unlimited by default: an hourly cycle makes at most ~5 calls and cannot
       # run away. Set this as a repository variable if you want a hard stop.
       # Hitting it raises LLMBudgetExceeded, which the strategy already degrades
@@ -135,9 +170,9 @@ jobs:
       MAX_API_CALLS: ${{ vars.MAX_API_CALLS || '' }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
           cache: pip
@@ -147,10 +182,12 @@ jobs:
       # The journal IS the account for the paper broker: positions, cash,
       # drawdown state and the LLM response cache all live in it. Losing it
       # resets the account to its starting balance and silently erases a
-      # drawdown halt, so it is restored before the cycle and saved after.
+      # drawdown halt, so it is restored before the loop and saved after.
+      # Every arm shares the one file; PaperBroker keeps a separate account per
+      # strategy inside it.
       - name: Restore journal
         id: journal
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: data/journal.sqlite3
           key: journal-${{ env.MARKET }}-${{ github.run_id }}
@@ -165,18 +202,84 @@ jobs:
             echo "::warning::No journal restored -- this cycle starts from a fresh account."
           fi
 
-      - name: Run one cycle
-        run: python trader.py
+      # Every arm, every hour: momentum first (the control), then
+      # momentum_plus (no key, never billed), then claude. A failure in one
+      # arm must never cost another its cycle, its later iterations, or the
+      # journal save after the loop.
+      #
+      # Dual mode is scheduled-and-NSE only. NSE runs on the journal-backed
+      # PaperBroker, which keeps an account per strategy. US runs on Alpaca,
+      # which has ONE server-side paper account: two strategies there would
+      # trade the same book and each journal the other's fills, so US keeps
+      # the single STRATEGY. A manual run is always one cycle of one strategy.
+      - name: Trade the session
+        timeout-minutes: 345
+        run: |
+          set -u
+          now() { date -u +%s; }
+          start=$(now)
+          day=$(( start - start % 86400 ))
+          close=$(( day + 10#${SESSION_CLOSE_UTC%:*} * 3600 + 10#${SESSION_CLOSE_UTC#*:} * 60 ))
+          budget_end=$(( start + LOOP_BUDGET_MINUTES * 60 ))
+          deadline=$(( close < budget_end ? close : budget_end ))
+          slot=$(( CYCLE_SLOT_MINUTE * 60 ))
 
-      # The page you actually look at. Written from the journal after the cycle,
-      # so it always describes the run that just happened.
+          if [ "$GITHUB_EVENT_NAME" = schedule ] && [ "$MARKET" = in ]; then
+            arms="momentum momentum_plus claude"
+          else
+            arms="$STRATEGY"
+          fi
+
+          failed=0
+          cycle() {
+            for arm in $arms; do
+              # The secrets context is not readable from a step-level `if:`,
+              # so the guard lives here. No key is a normal state, not a
+              # failure: the control keeps running and building its baseline.
+              if [ "$arm" = claude ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+                echo "ANTHROPIC_API_KEY not set; skipping the claude cycle"
+                continue
+              fi
+              echo "::group::$arm cycle at $(date -u +%H:%M) UTC"
+              # Never retried: a cycle that died may already have placed an
+              # order, and a retry would be a second one. The next slot is the
+              # retry, with a fresh look at the book.
+              timeout "${CYCLE_TIMEOUT_MINUTES}m" python -m claude_trader trade --strategy "$arm" \
+                || { echo "::warning::$arm cycle failed (exit $?)"; failed=1; }
+              echo "::endgroup::"
+            done
+          }
+
+          if [ "$GITHUB_EVENT_NAME" != schedule ]; then
+            cycle
+            exit "$failed"
+          fi
+
+          # ponytail: the first cycle runs on arrival, so a job that starts at
+          # HH:03 cycles again at HH:05. A doubled cycle re-decides the same
+          # book; a minimum gap enforced here could skip the 09:05 square-off.
+          while [ "$(now)" -lt "$deadline" ]; do
+            cycle
+            t=$(now)
+            next=$(( (t - slot) / 3600 * 3600 + 3600 + slot ))
+            if [ "$next" -ge "$deadline" ]; then
+              break
+            fi
+            sleep $(( next - t ))
+          done
+          # Red if any cycle failed, after every cycle has had its turn. The
+          # steps below all run under always(), so the journal is still saved.
+          exit "$failed"
+
+      # The page you actually look at. Written from the journal after the loop,
+      # so it describes the whole session the job just traded.
       - name: Render dashboard
         if: always()
         run: python -m claude_trader dashboard --out data/dashboard.html || true
 
       - name: Upload dashboard
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dashboard-${{ env.MARKET }}
           path: data/dashboard.html
@@ -184,33 +287,10 @@ jobs:
           overwrite: true
           if-no-files-found: warn
 
-      # Publish the dashboard so it can be checked from a phone without
-      # downloading an artifact. Skipped silently when VERCEL_TOKEN is not set,
-      # because the bot must keep trading whether or not hosting is configured.
-      #
-      # NOTE: a Vercel deployment URL is public to anyone who has it. This
-      # publishes the paper account's positions, decisions and P&L.
-      - name: Publish dashboard to Vercel
-        if: always()
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-        run: |
-          # The secrets context is not readable from a step-level `if:`, so the
-          # guard lives here. No token configured is a normal state, not a
-          # failure -- hosting is optional, trading is not.
-          if [ -z "$VERCEL_TOKEN" ]; then
-            echo "VERCEL_TOKEN not set; skipping publish"; exit 0
-          fi
-          test -s data/dashboard.html || { echo "no dashboard to publish"; exit 0; }
-          mkdir -p public
-          cp data/dashboard.html public/index.html
-          npx --yes vercel@latest deploy public --prod --yes --archive=tgz --token "$VERCEL_TOKEN" || echo "vercel deploy failed; continuing"
-
-      # The Pages copy. Vercel needs an account and three secrets; this needs
-      # neither, because the repository already has a token that can publish.
-      # Enable it once under Settings -> Pages -> Source: GitHub Actions.
+      # Published to GitHub Pages so it can be checked from a phone without
+      # downloading an artifact. No account or secret: the repository already
+      # has a token that can publish. Enable it once under
+      # Settings -> Pages -> Source: GitHub Actions.
       #
       # NOTE: on a public repository the published page is public. It shows the
       # paper account's positions, decisions and P&L.
@@ -233,13 +313,13 @@ jobs:
 
       - name: Upload Pages artifact
         if: always()
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: public
 
       - name: Save journal
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: data/journal.sqlite3
           key: journal-${{ env.MARKET }}-${{ github.run_id }}
@@ -249,7 +329,7 @@ jobs:
       # download if that happens.
       - name: Upload journal artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: journal-${{ env.MARKET }}
           path: data/journal.sqlite3
@@ -281,4 +361,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
