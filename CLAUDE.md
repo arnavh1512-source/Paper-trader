@@ -6,8 +6,8 @@ Guidance for Claude Code when working in this repository.
 
 A paper-trading research bot for **NSE (India)** and **US equities**. It is a
 package (`claude_trader/`), not a script. The top-level `trader.py` is a thin
-launcher kept only because the GitHub Actions workflow calls it by name; it is
-equivalent to `python -m claude_trader trade`.
+launcher, equivalent to `python -m claude_trader trade`. The workflow calls the
+module directly, because it passes `--strategy` per arm.
 
 The purpose of the project is measurement, not returns: does a language model
 add anything to a trading decision that a deterministic momentum rule does not?
@@ -18,7 +18,7 @@ Preserve that framing when changing things.
 ```bash
 pip install -r requirements.txt -r requirements-dev.txt
 
-pytest                                              # 998 tests, all offline
+pytest                                              # 1072 tests, all offline
 pytest --cov=claude_trader --cov-report=term-missing
 
 python -m claude_trader --market in doctor
@@ -49,7 +49,7 @@ One cycle: survey the universe → strategy picks candidates → per-symbol deci
 | Config | `config.py` — frozen `AppConfig`, env + flags, validates in `__post_init__` |
 | Market facts | `markets/india.py`, `markets/us.py` — `MarketProfile` |
 | Data | `data/sources.py` (Alpaca), `data/yahoo.py` (NSE), `data/indicators.py` |
-| Strategy | `strategies/momentum.py` (control), `strategies/claude_strategy.py` |
+| Strategy | `strategies/momentum.py` (control, frozen), `strategies/momentum_plus.py`, `strategies/claude_strategy.py` |
 | Model | `llm/client.py`, `llm/prompts.py`, `llm/schemas.py` |
 | Risk | `risk/engine.py` |
 | Execution | `engine/executor.py`, `brokers/` |
@@ -122,7 +122,13 @@ One cycle: survey the universe → strategy picks candidates → per-symbol deci
 
 ## Deployment
 
-`.github/workflows/trader.yml` runs one cycle per schedule tick.
+`.github/workflows/trader.yml` runs one job per trading day: staggered crons
+only start it, and a shell loop inside it trades hourly until the close. On
+NSE each slot runs `momentum`, `momentum_plus`, then `claude` (skipped without
+a key; a claude failure never costs another arm its cycle). The arm list must
+equal `VALID_STRATEGIES`; a test enforces it. US keeps one `STRATEGY`, because
+Alpaca has a single paper account. `tests/test_schedule.py` runs that loop
+under a fake clock.
 `.github/workflows/tests.yml` runs the suite on 3.11 and 3.12 with no secrets in
 scope.
 

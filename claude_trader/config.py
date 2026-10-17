@@ -22,7 +22,7 @@ from .markets import DEFAULT_MARKET, MARKETS, MarketProfile, get_market
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
-VALID_STRATEGIES = ("claude", "momentum")
+VALID_STRATEGIES = ("claude", "momentum", "momentum_plus")
 VALID_BROKERS = ("alpaca", "paper")
 VALID_SEGMENTS = ("intraday", "delivery")
 
@@ -286,7 +286,7 @@ class AppConfig:
     dry_run: bool = False
     verbose: bool = False
     journal_path: str = "data/journal.sqlite3"
-    strategy: str = "claude"
+    strategy: str = "momentum"
 
     # --- news ---------------------------------------------------------------
     # Off by default. Headlines change what the model is shown, and a setting
@@ -447,7 +447,7 @@ class AppConfig:
             dry_run=_env_bool("DRY_RUN", False),
             verbose=_env_bool("VERBOSE", False),
             journal_path=_env_str("JOURNAL_PATH", "data/journal.sqlite3"),
-            strategy=_env_str("STRATEGY", "claude").lower(),
+            strategy=_env_str("STRATEGY", "momentum").lower(),
             news_enabled=_env_bool("NEWS_ENABLED", False),
             news_max_headlines=_env_int("NEWS_MAX_HEADLINES", 5),
             news_max_age_hours=_env_float("NEWS_MAX_AGE_HOURS", 24.0),

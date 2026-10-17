@@ -30,7 +30,7 @@ from .analytics.report import render_calibration, render_report
 from .app import build_strategy, configure_logging, run_live_cycle, summarise
 from .backtest.dataset import DatasetSpec, load_dataset, synthetic_bars
 from .backtest.engine import compare, run_backtest, run_buy_and_hold
-from .config import AppConfig, load_dotenv
+from .config import VALID_STRATEGIES, AppConfig, load_dotenv
 from .data.sources import HistoricalMarketData
 from .errors import TraderError
 from .journal.store import Journal
@@ -515,13 +515,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     trade = sub.add_parser("trade", help="run one live paper-trading cycle")
     trade.add_argument("--dry-run", action="store_true", help="journal decisions, send no orders")
-    trade.add_argument("--strategy", default=None, choices=["claude", "momentum"])
+    trade.add_argument("--strategy", default=None, choices=VALID_STRATEGIES)
     trade.set_defaults(func=cmd_trade)
 
     back = sub.add_parser("backtest", help="replay the decision path over history")
     back.add_argument("--days", type=int, default=30)
     back.add_argument("--symbols", default="", help="comma separated; defaults to the universe")
-    back.add_argument("--strategy", default=None, choices=["claude", "momentum"])
+    back.add_argument("--strategy", default=None, choices=VALID_STRATEGIES)
     back.add_argument("--cash", type=float, default=None, help="defaults to the market's starting cash")
     back.add_argument("--warmup", type=int, default=40, help="bars reserved for indicators")
     back.add_argument("--horizon", type=int, default=26, help="calibration horizon in bars")

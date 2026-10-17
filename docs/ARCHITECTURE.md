@@ -39,7 +39,7 @@ statement about the backtester, not about the strategy.
 | `markets/` | `MarketProfile` per market: session, timezone, tick size, lot rules, benchmark, currency, cost model. The only place a market-specific fact is allowed to live. |
 | `models.py` | Frozen domain types: `Bar`, `Quote`, `Snapshot`, `Position`, `Account`, `OrderRequest`, `OrderResult`, `Decision`. |
 | `data/` | `MarketDataSource` implementations (Alpaca, Yahoo), RSS headlines, and indicators. |
-| `strategies/` | `Strategy` protocol; `MomentumStrategy` (the control) and `ClaudeStrategy` (the subject). |
+| `strategies/` | `Strategy` protocol; `MomentumStrategy` (the control, frozen), `MomentumPlusStrategy` (the control plus fixed filters) and `ClaudeStrategy` (the subject). |
 | `llm/` | Anthropic client with retries, response caching, and **schema validation** of every reply. |
 | `risk/` | The gate. Sizing, caps, breakers, staleness, spread, cost-to-edge. |
 | `engine/` | `run_cycle` and the executor that turns an approved decision into an order. |
@@ -162,7 +162,7 @@ AppConfig.from_env()
    |- MarketProfile          session, tick, costs, benchmark, currency
    |- build_market_data      Alpaca | Yahoo
    |- build_broker           Alpaca | PaperBroker (journal-backed)
-   |- build_strategy         Claude | Momentum
+   |- build_strategy         Claude | Momentum | MomentumPlus
         |
         \- run_cycle(deps, now)
              1. broker.is_market_open(now)     -> closed? record and stop
@@ -197,7 +197,7 @@ row is what makes them distinguishable months later.
 
 ## Testing
 
-972 tests, ~98% statement coverage, all offline.
+1072 tests, ~98% statement coverage, all offline.
 
 The suite is organised by the thing being defended rather than by module — test
 names read as claims about behaviour ("a market order is never retried",

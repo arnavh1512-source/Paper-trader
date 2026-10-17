@@ -24,6 +24,7 @@ from claude_trader.markets import INDIA_MARKET, US_MARKET
 from claude_trader.models import Action, Indicators, Position
 from claude_trader.strategies.claude_strategy import ClaudeStrategy
 from claude_trader.strategies.momentum import MomentumStrategy
+from claude_trader.strategies.momentum_plus import MomentumPlusStrategy
 from tests.conftest import make_snapshot, make_state
 
 NOW = datetime(2026, 3, 2, 5, 0, tzinfo=timezone.utc)
@@ -345,8 +346,10 @@ def test_the_client_is_exposed_so_usage_can_be_reported():
     assert claude(client).client is client
 
 
-def test_both_strategies_satisfy_the_same_contract():
+def test_every_strategy_satisfies_the_same_contract():
     """The engine must not be able to tell them apart."""
-    for strategy in (MomentumStrategy(UNIVERSE), claude(ScriptedClient())):
+    plus = MomentumPlusStrategy(UNIVERSE, profile=INDIA_MARKET,
+                                costs=IndianEquityCosts(), position_pct=0.2)
+    for strategy in (MomentumStrategy(UNIVERSE), plus, claude(ScriptedClient())):
         assert isinstance(strategy.name, str)
         assert callable(strategy.pick) and callable(strategy.decide)
